@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:specdlc:schema:tandem.tasks:0",
+  "title": "tandem.tasks/v0",
+  "description": "Task import payload. A runtime imports per row: a row without a title is rejected, other rows still import. Unknown row fields are ignored and reported, so rows allow additional properties.",
+  "type": "object",
+  "required": ["schema", "tasks"],
+  "properties": {
+    "schema": { "const": "tandem.tasks/v0" },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "estimate_pomodoros": { "type": "integer", "minimum": 0 },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}
