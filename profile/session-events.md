@@ -25,10 +25,20 @@ Action in past tense.
 | `com.specdlc.tandem.task_added.v1` | same as imported |
 | `com.specdlc.tandem.task_completed.v1` | `task_id` |
 | `com.specdlc.tandem.pomodoro_started.v1` | `pomodoro_id`, `task_id`, `focus_seconds`, `break_seconds`, `ends_at` |
+| `com.specdlc.tandem.pomodoro_paused.v1` | `pomodoro_id`, `remaining_seconds` |
+| `com.specdlc.tandem.pomodoro_resumed.v1` | `pomodoro_id`, `ends_at` |
 | `com.specdlc.tandem.pomodoro_stopped.v1` | `pomodoro_id` |
 | `com.specdlc.tandem.pomodoro_finished.v1` | `pomodoro_id`, `task_id` |
 
 `pomodoro_finished` is internal. The timer records it when the clock reaches the scheduled end. It is not a command. Its actor kind copies the matching start. Its `time` is the scheduled end.
+
+`pause_pomodoro` appends `pomodoro_paused` only during focus. `subject` is the pomodoro id. `time` is the pause instant. `remaining_seconds` is the time left at that instant. `actor` is `human:local` or `agent:local`, matching the caller.
+
+`resume_pomodoro` appends `pomodoro_resumed` for one paused pomodoro when no other pomodoro is running and none is paused inside the roll-off window. `ends_at` is the resume instant plus the frozen `remaining_seconds`. After resume the phase is focus, and the time left is `ends_at` minus `now`.
+
+A paused pomodoro does not finish and does not enter the break. Close uses `stop_pomodoro` and `pomodoro_stopped`. It clears a running pomodoro or an in-window paused one. There is no separate close event.
+
+The board is a fold of the log. It takes `now`, `pausedRollOffMs`, and `includeStale`, and it does not read the clock. Rolling a paused session off the board writes no event. The default window is 3 days. A paused session whose age is greater than or equal to the window is absent when `includeStale` is false, and still listed when `includeStale` is true. `get_status` uses that default window and `includeStale: false`. A stale paused session can be resumed when nothing is running and nothing in-window is paused.
 
 ## Cursor
 
@@ -67,6 +77,20 @@ Closed: no property outside the lists below.
       }
     },
     {
+      "type": "object", "additionalProperties": false, "required": ["pomodoro_id", "remaining_seconds"],
+      "properties": {
+        "pomodoro_id": { "type": "string", "minLength": 1 },
+        "remaining_seconds": { "type": "integer", "minimum": 0, "maximum": 1500 }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["pomodoro_id", "ends_at"],
+      "properties": {
+        "pomodoro_id": { "type": "string", "minLength": 1 },
+        "ends_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    {
       "type": "object", "additionalProperties": false, "required": ["pomodoro_id"],
       "properties": { "pomodoro_id": { "type": "string", "minLength": 1 } }
     },
@@ -78,4 +102,4 @@ Closed: no property outside the lists below.
 }
 ```
 
-A type selects one branch: imported and added use the first, completed the second, started the third, stopped the fourth, finished the fifth.
+A type selects one branch: imported and added use the first, completed the second, started the third, paused the fourth, resumed the fifth, stopped the sixth, finished the seventh.
