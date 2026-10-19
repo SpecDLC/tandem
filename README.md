@@ -17,8 +17,14 @@ Tandem is a local-first focus session that a person and an agent drive through o
 | [templates/coach.md](templates/coach.md) | Optional "start my day" routine for an agent |
 | [templates/sync.md](templates/sync.md) | Default sync path and schedule |
 | [scripts/sync-jsonl.mjs](scripts/sync-jsonl.mjs) | Idempotent append of exported events to a JSONL file |
-| [GUIDE.md](GUIDE.md) | How to build a runtime from the cards |
+| [GUIDE.md](GUIDE.md) | How to build a runtime from the cards, and a walkthrough of one session from a person and from an agent, then the JSONL sync replay |
 
 `cards/`, `spec/`, and `projections/` are generated from a ledger. Edit proposals belong in an issue, not in those files.
+
+## Start here
+
+1. Read [spec/SPECIFICATION.md](spec/SPECIFICATION.md) and open any card it lists.
+2. Follow the walkthrough in [GUIDE.md](GUIDE.md): a person and an agent each start a pomodoro and write the same kind of CloudEvent, then you sync the JSONL file and replay it. It needs Node 18 or later and nothing outside this repository. The templates are optional.
+3. Run `node scripts/check.mjs` to check the cards, schema, and openings (it needs the `ajv` package).
 
 License: MIT.
