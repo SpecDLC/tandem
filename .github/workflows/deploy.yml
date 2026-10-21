@@ -1,0 +1,169 @@
+# Public repo: Cloudflare Workers static assets (the Vite build in dist/).
+#   PR from a branch in THIS repo  -> Worker Preview (URL commented on the PR)
+#   push to main (= Patrick merged)-> production deploy to https://tandem.specdlc.com
+#                                    only after the ci workflow succeeds for that commit
+#   PR closed                      -> preview deleted
+#   manual run on main             -> production deploy only if ci succeeded for that commit
+# Fork PRs never get secrets (pull_request, not pull_request_target).
+# Off until the repo variable CLOUDFLARE_DEPLOY_ENABLED is "true" (Patrick flips it).
+# CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are SpecDLC organization Actions secrets
+# selected for this repository.
+# environment: preview adds the repository owner as a required reviewer on the jobs that set it.
+# environment: production has no required reviewer. Merging to main is the production approval.
+# ci is .github/workflows/ci.yml, a separate workflow, so `needs` cannot see it.
+# Production asks the Actions API for the latest ci run of this commit and does not
+# deploy unless that run completed with success.
+# Wrangler can print banner or warning lines around --json output, so the preview step
+# extracts the URL tolerantly and never fails the job just because the output is not JSON.
+name: Deploy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+  workflow_dispatch:          # manual production deploy of main (e.g. right after enabling deploys)
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: deploy-${{ github.event.pull_request.number || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  WRANGLER: wrangler@4.151.2   # exact 4.x; `wrangler preview` and `wrangler preview delete` are supported
+
+jobs:
+  preview:
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      github.event_name == 'pull_request' && github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: preview
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Build the site
+        run: npm ci && npm run build
+      - id: preview
+        name: Create or update Worker Preview
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/wrangler-preview.log"
+          npx --yes "$WRANGLER" preview --name "pr-${{ github.event.pull_request.number }}" --json > "$log" 2>&1 || {
+            cat "$log"; echo "wrangler preview failed"; exit 1; }
+          cat "$log"
+          # Prefer the JSON field; fall back to the first https URL in the output.
+          url="$(jq -er '.preview.urls[0]' "$log" 2>/dev/null \
+            || sed -n '/^[[:space:]]*{/,$p' "$log" | jq -er '.preview.urls[0]' 2>/dev/null \
+            || grep -Eo 'https://[A-Za-z0-9._/-]+\.workers\.dev[A-Za-z0-9._/-]*' "$log" | head -n1 \
+            || true)"
+          if [ -z "$url" ]; then
+            echo "::warning::Preview uploaded but no URL could be read from wrangler output."
+            url="(URL not reported; see the Deploy run log)"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Comment the preview URL
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --edit-last --create-if-none \
+            --body "Preview for review: ${{ steps.preview.outputs.url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup:
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      github.event_name == 'pull_request' && github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: preview
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - run: npx --yes "$WRANGLER" preview delete --name "pr-${{ github.event.pull_request.number }}" --skip-confirmation
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  production:
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45             # wait for ci and then build
+    permissions:
+      contents: read
+      actions: read                  # list ci runs; the workflow token otherwise cannot
+    environment: production        # merging to main is already the approval to deploy; do not add a required reviewer
+    steps:
+      - name: Require a successful ci run for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Same-push ci runs appear a few seconds later. A manual run with no
+          # ci at all fails closed after this grace period. An in-progress run
+          # is waited out. failure, cancelled, and timed_out all refuse the deploy.
+          deadline=$((SECONDS + 40 * 60))
+          missing_deadline=$((SECONDS + 5 * 60))
+          while true; do
+            json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=1")"
+            status="$(printf '%s' "$json" | jq -r '.workflow_runs[0].status // "missing"')"
+            conclusion="$(printf '%s' "$json" | jq -r '.workflow_runs[0].conclusion // "none"')"
+            url="$(printf '%s' "$json" | jq -r '.workflow_runs[0].html_url // ""')"
+            echo "ci for ${SHA}: status=${status} conclusion=${conclusion} ${url}"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" != "success" ]; then
+                echo "Refusing production deploy. ci concluded ${conclusion} for ${SHA}."
+                exit 1
+              fi
+              break
+            fi
+            if [ "$status" = "missing" ] && [ "$SECONDS" -ge "$missing_deadline" ]; then
+              echo "Refusing production deploy. No ci run for ${SHA}."
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Refusing production deploy. ci did not finish for ${SHA}."
+              exit 1
+            fi
+            sleep 15
+          done
+          tip="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "$tip" != "$SHA" ]; then
+            echo "Refusing production deploy of ${SHA}. main is ${tip}."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Build the site
+        run: npm ci && npm run build
+      - name: Confirm this commit is still main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tip="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "$tip" != "$SHA" ]; then
+            echo "Refusing production deploy of ${SHA}. main is now ${tip}."
+            exit 1
+          fi
+      - run: npx --yes "$WRANGLER" deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

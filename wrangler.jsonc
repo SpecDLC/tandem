@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tandem",
+  "compatibility_date": "2026-10-21",
+  // Static assets only: the Vite build output. No Worker script, no bindings
+  // (no D1, KV, Durable Objects) and no API routes. Boards live in the browser.
+  "assets": {
+    "directory": "./dist"
+  },
+  // Wrangler creates the DNS record and certificate for a Custom Domain on deploy.
+  "routes": [
+    { "pattern": "tandem.specdlc.com", "custom_domain": true }
+  ],
+  // One origin only: browser storage belongs to the origin it was created on.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Worker Previews need a previews block; it can be empty. `wrangler preview` uses it.
+  "previews": {}
+}
