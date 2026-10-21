@@ -28,3 +28,12 @@ Tandem is a local-first focus session that a person and an agent drive through o
 3. Run `node scripts/check.mjs` to check the cards, schema, and openings (it needs the `ajv` package).
 
 License: MIT.
+
+## Reference app
+
+This repository also carries a reference runtime: `src/` (TypeScript, Vite, no UI framework), `public/`, `vendor/webmcp-polyfill/`, and its tests in `test/`. Engineering acceptance criteria are in [ac/](ac/).
+
+```sh
+npm ci && npm run typecheck && npm test && npm run build && npm run smoke
+npm run witness      # interface witnesses against dist/
+```

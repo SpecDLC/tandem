@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fdfdfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131517" media="(prefers-color-scheme: dark)">
+<title>Tandem</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-512.png">
+<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="preload" href="fonts/barlow-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="src/styles.css">
+<link rel="stylesheet" href="src/themes.css">
+</head>
+<body>
+<!--
+  Hooks kept from the current page (main.ts and tests depend on them — do not rename):
+  #status · [data-command=get_status] · [data-rejection] · [data-result] · [data-command=list_tasks]
+  #add-title · [data-command=add_task] · [data-command=stop_pomodoro] · [data-command=start_pomodoro] (per row)
+  [data-command=complete_task] (per row) · #tasks-input · [data-command=import_tasks]
+  [data-command=export_events] · #events-input · #events-file · [data-command=import_events]
+  [data-command=pause_pomodoro] · [data-command=resume_pomodoro]
+  delete_task and reorder_tasks are not in the DOM until those commands exist.
+  Theme switches on <html>: data-look="<name>" (themes.css) · data-theme="light|dark" (force scheme for the default look) · data-spot="fill|outline"
+  Actor marks: data-touched="agent" + data-touched-tool="<tool name>" on the .task__front or .focus the agent just changed (remove after 4 s)
+-->
+<div class="sheet">
+  <div class="zones" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div>
+
+  <header class="masthead">
+    <h1>Tandem <span class="tagline">You and your agent, one timer</span></h1>
+    <div class="masthead__right">
+      <!-- Presence: "ready" until an agent calls a tool; "active" for ~3 s after each call, naming the tool. -->
+      <span class="presence" data-state="ready" aria-live="polite">
+        <span class="presence__mark" aria-hidden="true"></span>
+        <span data-field="presence">Agent tools ready · WebMCP</span>
+        <!-- active: <span>Agent · <code>add_task</code></span> -->
+      </span>
+      <span class="sheet-label">Sheet 01 · Focus</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main>
+      <!-- 1. Focus card. main.ts sets data-phase (idle | focus | break | paused) and data-remaining, then fills the [data-field] spans. -->
+      <section class="focus" data-command="get_status" data-phase="idle" data-remaining="0" aria-labelledby="focus-label">
+        <div class="focus__top" data-when="running">
+          <span class="label" id="focus-label"><span data-field="phase-label">Now focusing</span> · started by <span class="actor" data-field="actor" data-actor="human">You</span></span>
+          <span data-field="paused-age" data-when="paused"></span>
+          <span class="flag" data-field="phase">Focus</span>
+        </div>
+        <p class="focus__task" data-when="running" data-field="task-title"></p>
+        <div class="focus__row">
+          <div class="focus__clock" role="timer" aria-hidden="true" data-field="clock" data-when="running">25:00</div>
+          <div class="focus__actions">
+            <!-- Fixed minimum width so Pause ⇄ Resume never moves Stop. -->
+            <button type="button" class="btn btn--lg btn--pause" data-command="pause_pomodoro" data-when="focus" aria-pressed="false">Pause</button>
+            <button type="button" class="btn btn--lg btn--pause" data-command="resume_pomodoro" data-when="paused" aria-pressed="true">Resume</button>
+            <button type="button" class="btn btn--lg btn--stop" data-command="stop_pomodoro">Stop</button>
+          </div>
+        </div>
+        <div class="focus__bar" data-when="running" aria-hidden="true"><span data-field="progress"></span></div>
+        <div class="focus__meta label" data-when="running"><span data-field="elapsed">0 of 25 min</span><span>Ends <time data-field="ends-at"></time></span></div>
+
+        <span class="label" data-when="idle">Idle · 25 minute pomodoro</span>
+        <p class="focus__idle-title" data-when="idle">Pick a task to focus on</p>
+        <p class="focus__idle-copy" data-when="idle">Press Start on any task below. Your agent can start one too, and you'll see it here.</p>
+        <div data-when="idle"><button type="button" class="btn btn--lg btn--primary btn--yellow" data-action="start-next" data-command="start_pomodoro" data-task-id="">Start next: <span data-field="next-title"></span></button></div>
+        <!-- Screen-reader announcements: written only on start, pause, stop, finish and at 1:00 left — never every tick. -->
+        <span class="visually-hidden" aria-live="polite" data-field="announce"></span>
+      </section>
+
+      <!-- Paused cards from the board projection. Show stale switches includeStale and writes no event. -->
+      <div class="paused-head">
+        <label class="show-stale"><input type="checkbox" data-action="show-stale"> Show stale</label>
+      </div>
+      <ul class="paused-board" data-field="paused-board" data-include-stale="false"></ul>
+
+      <!-- 6. Friendly messages. main.ts writes friendly(code) here instead of the raw code (see messages.ts). -->
+      <div class="notice" role="alert" data-rejection></div>
+      <p data-result role="status"></p>
+
+      <!-- 4a. Phone-only activity strip: newest event on one line; open for the next 3. Desktop uses the Activity section in the aside. -->
+      <details class="ticker" hidden>
+        <summary>
+          <span class="who" data-actor="agent" data-field="ticker-who">Agent</span>
+          <span class="ticker__text" data-field="ticker-text"></span>
+        </summary>
+        <ol class="activity" data-field="ticker-rest"></ol>
+      </details>
+
+      <!-- 2 + 3. Tasks -->
+      <section aria-labelledby="tasks-h">
+        <div class="section-head">
+          <h2 class="section-h" id="tasks-h">Tasks</h2>
+          <span class="count" data-field="open-count">0 open</span>
+        </div>
+
+        <!-- Phone-only, shown until dismissed (remember the dismissal in localStorage, wrapped in try/catch). -->
+        <p class="swipe-hint" id="swipe-hint" hidden>
+          <svg aria-hidden="true" width="26" height="14" viewBox="0 0 26 14"><path d="M1 7H25M5 3 1 7l4 4M21 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span>Swipe right to start. Swipe left for done or delete. Hold to reorder. Tap a task for every action.</span>
+          <button type="button" class="icon-btn" data-action="dismiss-hint" aria-label="Dismiss tip"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 14 14"><path d="M2 2l10 10M12 2 2 12" stroke="currentColor" stroke-width="1.8"/></svg></button>
+        </p>
+
+        <ul class="tasks" data-command="list_tasks" aria-labelledby="tasks-h"></ul>
+
+        <!-- Enter submits: the button is type=submit, so Enter in #add-title fires its click, which the existing handler already runs.
+             On phones this same form becomes a bar pinned to the bottom of the screen (CSS only). -->
+        <form id="add-form" class="add" autocomplete="off">
+          <label for="add-title" class="visually-hidden">Add a task</label>
+          <div class="add__field">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.8"/></svg>
+            <input id="add-title" placeholder="Add a task" aria-describedby="add-hint" enterkeyhint="done">
+            <kbd id="add-hint" aria-label="Press Enter to add">Enter</kbd>
+          </div>
+          <button type="submit" class="btn btn--lg" data-command="add_task">Add</button>
+        </form>
+
+        <div class="done-head" data-field="done-head" hidden>
+          <h3 id="done-h">Completed</h3><span class="label" data-field="done-count">0</span>
+        </div>
+        <ul class="tasks" aria-labelledby="done-h" data-field="done-list"></ul>
+      </section>
+    </main>
+
+    <!-- Right column order: title block, Activity, Advanced. -->
+    <aside>
+      <dl class="title-block" aria-label="Session">
+        <div><dt class="label">Title</dt><dd class="tb-title">Tandem · Focus session</dd></div>
+        <div><dt class="label">Phase</dt><dd data-field="tb-phase">Idle</dd></div>
+        <div><dt class="label">Done today</dt><dd data-field="tb-done">0</dd></div>
+        <div><dt class="label">Storage</dt><dd>This device</dd></div>
+        <div><dt class="label">Network</dt><dd>Works offline</dd></div>
+      </dl>
+
+      <!-- 4b. Activity: last 4 events from the session log, newest first. Hidden on phones (the ticker replaces it). -->
+      <section class="activity-panel" aria-labelledby="act-h">
+        <div class="section-head">
+          <h2 class="section-h" id="act-h">Activity</h2>
+          <span class="count">Last 4</span>
+        </div>
+        <ol class="activity" data-field="activity">
+          <!-- <li><span class="who" data-actor="agent">Agent</span><span>Agent added “Post Shalom’s LinkedIn recommendation” <time datetime="…">· 2m ago</time></span></li> -->
+        </ol>
+      </section>
+
+      <!-- 5. Advanced drawer -->
+      <details class="advanced" open>
+        <summary><span class="title">Advanced</span><span id="status" data-ready="false">Starting</span></summary>
+        <div class="advanced__body">
+          <div class="stack">
+            <label class="label" for="tasks-input">Import tasks · tandem.tasks/v0 JSON</label>
+            <textarea id="tasks-input" rows="5" spellcheck="false" placeholder='{"schema":"tandem.tasks/v0","tasks":[{"title":"…"}]}'></textarea>
+            <div><button type="button" class="btn" data-command="import_tasks">Import tasks</button></div>
+          </div>
+
+          <div class="stack">
+            <span class="label">Event log</span>
+            <div class="row-btns">
+              <button type="button" class="btn" data-command="export_events">Export log</button>
+              <label class="btn file-btn">Choose .jsonl file<input id="events-file" type="file" accept=".jsonl,application/x-ndjson" aria-label="Events file"></label>
+            </div>
+            <label class="label" for="events-input">Events JSONL to import</label>
+            <textarea id="events-input" rows="4" spellcheck="false"></textarea>
+            <div><button type="button" class="btn" data-command="import_events">Import log</button></div>
+          </div>
+
+          <div class="stack">
+            <span class="label">Commands declared to agents</span>
+            <ul class="commands" data-field="commands">
+              <li>import_tasks</li><li>add_task</li><li>complete_task</li><li>list_tasks</li><li>start_pomodoro</li>
+              <li>pause_pomodoro</li><li>resume_pomodoro</li><li>stop_pomodoro</li><li>get_status</li><li>export_events</li><li>import_events</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+    </aside>
+  </div>
+</div>
+
+<!-- Phone: action sheet opened by tapping a task. Every gesture's action is here too (WCAG 2.5.1). Use dialog.showModal(): it traps focus and closes on Esc. -->
+<dialog class="action-sheet" aria-labelledby="sheet-title">
+  <div class="action-sheet__grab" aria-hidden="true"></div>
+  <header>
+    <span class="label" data-field="sheet-meta">T-01 · Added by you</span>
+    <p id="sheet-title" data-field="sheet-title"></p>
+  </header>
+  <button type="button" class="sheet-btn sheet-btn--start" data-command="start_pomodoro" data-task-id="">
+    <svg aria-hidden="true" width="12" height="14" viewBox="0 0 12 14"><path d="M1 1l10 6-10 6z" fill="currentColor"/></svg>
+    <span data-field="sheet-start">Start focus</span><span class="sheet-btn__hint">Swipe →</span>
+  </button>
+  <button type="button" class="sheet-btn sheet-btn--done" data-command="complete_task" data-task-id="">
+    <svg aria-hidden="true" width="18" height="14" viewBox="0 0 18 14"><path d="M1.5 7.5l5 4.5 10-10" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>
+    Mark done<span class="sheet-btn__hint">← Swipe</span>
+  </button>
+  <button type="button" class="sheet-btn sheet-btn--cancel" data-action="close-sheet">Cancel</button>
+</dialog>
+
+<!-- Phone: undo bar after a delete. delete_task is sent only when this times out (6 s), so agents never see delete-then-restore. -->
+<div class="undo-bar" role="status" hidden>
+  <span data-field="undo-text">Deleted “…”</span>
+  <button type="button" data-action="undo-delete">Undo</button>
+</div>
+
+<!-- One task row. main.ts's renderList clones this instead of building bare <li>s.
+     .task__under is the swipe layer (phones only); .task__front slides over it. -->
+<template id="task-row">
+  <li class="task" data-task-id="" data-status="open" data-active="false">
+    <div class="task__under" aria-hidden="true">
+      <div class="under-start"><svg width="12" height="14" viewBox="0 0 12 14"><path d="M1 1l10 6-10 6z" fill="currentColor"/></svg><span data-field="under-start">Start</span></div>
+      <div class="under-actions">
+        <span class="under-done"><svg width="18" height="14" viewBox="0 0 18 14"><path d="M1.5 7.5l5 4.5 10-10" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>Done</span>
+
+      </div>
+    </div>
+    <div class="task__front" data-touched="" data-touched-tool="">
+      <input type="checkbox" class="task__check" data-command="complete_task" data-task-id="" aria-label="Complete …">
+      <!-- A button so the row is tappable on phones (opens the action sheet). On desktop main.ts sets tabindex=-1 and it does nothing. -->
+      <button type="button" class="task__open" aria-haspopup="dialog" aria-label="… Show actions">
+        <span class="task__title" data-field="title"></span>
+        <span class="label" data-field="meta"><!-- T-01 · <span class="actor" data-actor="agent">Agent</span> · 2 pomodoros  (who added it, or who last changed it) --></span>
+      </button>
+      <span class="flag" data-field="active-flag">In focus</span>
+      <button type="button" class="btn task__start" data-command="start_pomodoro" data-task-id="">Start</button>
+      <button type="button" class="icon-btn task__more" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for …">
+        <svg aria-hidden="true" width="18" height="4" viewBox="0 0 18 4" fill="currentColor"><circle cx="2" cy="2" r="1.7"/><circle cx="9" cy="2" r="1.7"/><circle cx="16" cy="2" r="1.7"/></svg>
+      </button>
+    </div>
+    <div class="menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-command="complete_task" data-task-id="">Mark done</button>
+    </div>
+  </li>
+</template>
+<template id="paused-card">
+  <li class="paused-card" data-pomodoro-id="">
+    <span class="paused-card__icon" aria-hidden="true"><svg width="14" height="16" viewBox="0 0 14 16"><path d="M1 1h4v14H1zM9 1h4v14H9z" fill="currentColor"/></svg></span>
+    <p class="paused-card__title" data-field="title"></p>
+    <p class="paused-card__time" data-field="time"></p>
+    <p class="paused-card__age" data-field="age"></p>
+    <span class="paused-card__accent" aria-hidden="true"></span>
+    <button type="button" class="btn paused-card__resume" data-command="resume_pomodoro">Resume</button>
+    <button type="button" class="btn paused-card__close" data-command="stop_pomodoro">Close</button>
+  </li>
+</template>
+<p id="reorder-help" class="visually-hidden">Drag to reorder, or focus the row and press Alt with the up or down arrow.</p>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

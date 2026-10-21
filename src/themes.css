@@ -1,0 +1,199 @@
+/* Tandem — theme library
+   ============================================================================
+   HOW THEMING WORKS
+   Tandem's look comes from ~20 CSS custom properties ("tokens") set on :root in styles.css.
+   A theme is one rule that overrides some of them. Components never hard-code a color, font,
+   corner radius or rule weight, so overriding tokens is the whole job.
+
+   Apply a theme:   <html data-look="night-owl" data-spot="outline">
+   Make your own:   copy any block below, rename the data-look value, change the values.
+
+   THE CONTRACT
+   Color (required — every pair below must pass WCAG AA, 4.5:1 for text):
+     --paper        page ground
+     --ink          text, borders, rules               (on --paper)
+     --sub          secondary text, labels             (on --paper)
+     --hair         decorative row dividers only       (no contrast requirement)
+     --red          STOP / attention: Stop, errors, Delete, focus ring  (on --paper)
+     --on-red       text on a --red fill                (on --red)
+     --green        DONE: checkmarks, Completed, Done today             (on --paper)
+     --yellow       NOW: running focus card, active task, Start          (any hue — it's a role, not a color)
+     --on-yellow    text on a --yellow fill             (on --yellow)
+     --agent        AGENT: anything the agent did via WebMCP — actor chips, touch marks, presence  (on --paper)
+                    Humans have no color: "You" is plain ink. Keep --agent distinct from the three spots.
+   In outline mode (data-spot="outline") --yellow becomes text on --paper, so it needs 4.5:1 there too.
+
+   Type and shape (optional):
+     --font-draft   labels, headings, the countdown, buttons
+     --font-text    task titles and reading text
+     --font-mono    the Advanced drawer
+     --radius       buttons, cards, inputs, menus          (default 0)
+     --radius-flag  the status pill                        (default 22px)
+     --rule         thin rules                             (default 1px)
+     --rule-heavy   card borders, section rules            (default 2px)
+
+   Fine-tuning (optional; defaults derive from the tokens above):
+     --red-on-yellow / --on-red-on-yellow   Stop button + status dot when they sit on a yellow surface
+     --stop-bg / --stop-fg / --stop-border  the Stop button (default: solid --red)
+     --start-bg / --start-fg                the "Start" swipe panel and sheet button (default: --yellow)
+     --outline-surface                      swipe panels in outline mode
+
+   Spot mode (attribute, not a token): data-spot="fill" paints yellow surfaces; data-spot="outline"
+   keeps surfaces at --paper and uses the spot colors for text and 2px borders. Each theme below
+   says which it was designed for. Every theme here has been checked for AA contrast.
+   ============================================================================ */
+
+/* ---------- Built in ---------- */
+
+/* Drafting (default, no attribute). SpecDLC ink on paper with yellow / red / green spots.
+   Follows the OS light/dark setting; dark uses outline mode. */
+
+/* Drafting Mono — the original monochrome SpecDLC sheet. data-spot="fill" */
+:root[data-look="drafting-mono"] {
+  color-scheme: light;
+  --paper: #fdfdfb; --ink: #16181a; --sub: #5a5e63; --hair: #c9cbc6;
+  --red: #c4161c; --on-red: #fdfdfb; --green: #16181a; --yellow: transparent; --on-yellow: #16181a;
+  --red-on-yellow: #c4161c; --on-red-on-yellow: #fdfdfb;
+  --stop-bg: transparent; --stop-fg: #16181a; --stop-border: #16181a;
+  --start-bg: #16181a; --start-fg: #fdfdfb;
+  --agent: #16181a;  /* mono: agent marks rely on the dashed style and the word 'Agent' */
+}
+
+
+/* ---------- Professions ---------- */
+
+/* Surgeon — Scrub teal on sterile white. Soft corners, thin rules, nothing loud.  data-spot="fill" */
+:root[data-look="surgeon"] {
+  color-scheme: light;
+  --paper: #f5faf9; --ink: #0d2a30; --sub: #4a6066; --hair: #c3d6d4;
+  --red: #c21d3a; --on-red: #ffffff; --green: #13704a;
+  --yellow: #7fd6c8; --on-yellow: #0d2a30;
+  --red-on-yellow: #c21d3a; --on-red-on-yellow: #ffffff;
+  --agent: #2a47b0;
+  --font-draft: "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  --font-text: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --radius: 8px; --rule-heavy: 1.5px;
+}
+
+/* Air Traffic Controller — Radar-scope green with amber for the live strip. All monospace.  data-spot="outline" */
+:root[data-look="air-traffic"] {
+  color-scheme: dark;
+  --paper: #04110c; --ink: #b9f7cd; --sub: #6fae86; --hair: #1d3a2c;
+  --red: #ff5c5c; --on-red: #04110c; --green: #4cf08a;
+  --yellow: #ffb000; --on-yellow: #04110c;
+  --red-on-yellow: #04110c; --on-red-on-yellow: #ffb000;
+  --agent: #7fd3ff;
+  --font-draft: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-text: ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 0; --rule-heavy: 1px;
+}
+
+/* Librarian — Card-catalog cream, oxblood and bottle green, set in a book serif.  data-spot="fill" */
+:root[data-look="librarian"] {
+  color-scheme: light;
+  --paper: #f3ead8; --ink: #2a1f16; --sub: #6b5845; --hair: #d6c6a8;
+  --red: #8f1d1d; --on-red: #f3ead8; --green: #2e5a37;
+  --yellow: #e2b23c; --on-yellow: #2a1f16;
+  --red-on-yellow: #8f1d1d; --on-red-on-yellow: #f3ead8;
+  --agent: #24466f;
+  --font-draft: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-text: Georgia, "Times New Roman", serif;
+  --radius: 2px; --rule-heavy: 1px;
+}
+
+/* Line Cook — Order-ticket paper, heavy rules and a flame-orange rail. Built for speed.  data-spot="fill" */
+:root[data-look="line-cook"] {
+  color-scheme: light;
+  --paper: #fffaf0; --ink: #141414; --sub: #585550; --hair: #e2d9c8;
+  --red: #c30010; --on-red: #ffffff; --green: #1e6b2c;
+  --yellow: #ff8a1f; --on-yellow: #141414;
+  --red-on-yellow: #141414; --on-red-on-yellow: #ff8a1f;
+  --agent: #1f4fd1;
+  --font-draft: "Arial Black", "Helvetica Neue", Impact, sans-serif;
+  --font-text: "Helvetica Neue", Arial, sans-serif;
+  --radius: 0; --rule-heavy: 3px;
+}
+
+
+/* ---------- Moods ---------- */
+
+/* Still Water — Pale lake blue, round corners, hairline borders. The quietest option.  data-spot="fill" */
+:root[data-look="still-water"] {
+  color-scheme: light;
+  --paper: #eef2f5; --ink: #1d2933; --sub: #55636f; --hair: #cdd6de;
+  --red: #a83247; --on-red: #ffffff; --green: #2a6e55;
+  --yellow: #a9cde6; --on-yellow: #1d2933;
+  --red-on-yellow: #a83247; --on-red-on-yellow: #ffffff;
+  --agent: #34529a;
+  --font-draft: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius: 14px; --rule-heavy: 1px;
+}
+
+/* Fired Up — Ember black with a blazing focus card. Stop goes hot pink so it never blends in.  data-spot="fill" */
+:root[data-look="fired-up"] {
+  color-scheme: dark;
+  --paper: #170606; --ink: #ffece4; --sub: #d29a8a; --hair: #4a1a14;
+  --red: #ff3d7f; --on-red: #170606; --green: #7dffa0;
+  --yellow: #ff5a1f; --on-yellow: #170606;
+  --red-on-yellow: #170606; --on-red-on-yellow: #ff5a1f;
+  --agent: #7cc7ff;
+  --font-draft: "Arial Black", Impact, sans-serif;
+  --font-text: "Helvetica Neue", Arial, sans-serif;
+  --radius: 0; --rule-heavy: 3px;
+}
+
+/* Rainy Day — Slate and rain-blue, serif type, outlines instead of fills. Wistful, not gloomy.  data-spot="outline" */
+:root[data-look="rainy-day"] {
+  color-scheme: dark;
+  --paper: #1b2028; --ink: #d9e0e8; --sub: #97a3b1; --hair: #323a46;
+  --red: #f08a8a; --on-red: #1b2028; --green: #8fd1a8;
+  --yellow: #a9c4e8; --on-yellow: #1b2028;
+  --red-on-yellow: #1b2028; --on-red-on-yellow: #a9c4e8;
+  --agent: #c9b6ff;
+  --font-draft: Georgia, "Times New Roman", serif;
+  --font-text: Georgia, "Times New Roman", serif;
+  --radius: 6px; --rule-heavy: 1.5px;
+}
+
+
+/* ---------- Colloquialisms ---------- */
+
+/* Easy Peasy — Bubblegum and grape, fully rounded. For days the list should feel light.  data-spot="fill" */
+:root[data-look="easy-peasy"] {
+  color-scheme: light;
+  --paper: #fff6fa; --ink: #2a1d3d; --sub: #6a5a7e; --hair: #ecd6e4;
+  --red: #c2255c; --on-red: #ffffff; --green: #237a3b;
+  --yellow: #ffd3e6; --on-yellow: #2a1d3d;
+  --red-on-yellow: #c2255c; --on-red-on-yellow: #ffffff;
+  --agent: #4a3cc2;
+  --font-draft: ui-rounded, "SF Pro Rounded", "Nunito", "Arial Rounded MT Bold", sans-serif;
+  --font-text: ui-rounded, "SF Pro Rounded", "Nunito", system-ui, sans-serif;
+  --radius: 20px; --rule-heavy: 2px;
+}
+
+/* Night Owl — Midnight navy with a moon-yellow outline. Easy on the eyes after dark.  data-spot="outline" */
+:root[data-look="night-owl"] {
+  color-scheme: dark;
+  --paper: #0b1026; --ink: #e7eaff; --sub: #9aa3cf; --hair: #232a52;
+  --red: #ff6b81; --on-red: #0b1026; --green: #3ddc97;
+  --yellow: #ffd166; --on-yellow: #0b1026;
+  --red-on-yellow: #0b1026; --on-red-on-yellow: #ffd166;
+  --agent: #8ab4ff;
+  --font-draft: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-text: "Barlow", system-ui, sans-serif;
+  --radius: 4px; --rule-heavy: 2px;
+}
+
+/* Old School — Desktop-gray, title-bar navy, square everything. Like it's 1995.  data-spot="fill" */
+:root[data-look="old-school"] {
+  color-scheme: light;
+  --paper: #c3c3c3; --ink: #000000; --sub: #2e2e2e; --hair: #8a8a8a;
+  --red: #8b0000; --on-red: #ffffff; --green: #005a00;
+  --yellow: #000080; --on-yellow: #ffffff;
+  --red-on-yellow: #ffffff; --on-red-on-yellow: #000080;
+  --agent: #004d4d;
+  --font-draft: Tahoma, Verdana, "MS Sans Serif", sans-serif;
+  --font-text: Tahoma, Verdana, "MS Sans Serif", sans-serif;
+  --radius: 0; --rule-heavy: 2px;
+}
