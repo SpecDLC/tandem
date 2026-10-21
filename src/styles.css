@@ -1,0 +1,410 @@
+/* Tandem — redesign styles.
+   Plain CSS custom properties, no framework, no build step.
+
+   THEMING: every color, font, corner and rule weight comes from the tokens in the "Tokens" block.
+   To theme Tandem, override those tokens — never the component rules. See themes.css for the
+   contract and ten ready-made looks.
+
+   Switches on <html>:
+     data-look="night-owl"      a named theme from themes.css (or your own)
+     data-theme="light|dark"    force light or dark for the default look (default: follow the OS; no UI toggle)
+     data-spot="fill|outline"   how the spot colors apply: fill = colored surfaces, outline = colored text and borders
+                                (default: fill in light, outline in dark) */
+
+/* ---------- Fonts (self-hosted for offline/PWA; copy the Fontsource woff2 files into /public/fonts) ---------- */
+@font-face { font-family: "Barlow"; font-weight: 400; font-style: normal; font-display: swap; src: url("../fonts/barlow-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 500; font-style: normal; font-display: swap; src: url("../fonts/barlow-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 600; font-style: normal; font-display: swap; src: url("../fonts/barlow-condensed-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-style: normal; font-display: swap; src: url("../fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+
+/* ---------- Tokens ---------- */
+:root {
+  color-scheme: light dark;
+  --paper: #fdfdfb;     /* ground */
+  --ink:   #16181a;     /* text, borders, rules — 17.5:1 */
+  --sub:   #5a5e63;     /* secondary text — 6.4:1 */
+  --hair:  #c9cbc6;     /* decorative row rules only */
+  --red:   #c8102e;     /* spot: stop + attention — 5.8:1 on paper */
+  --on-red: #ffffff;    /* 5.9:1 */
+  --green: #1a7f37;     /* spot: done — 5.0:1 */
+  --yellow: #f2c230;    /* spot: now — same in both themes */
+  --on-yellow: #151515; /* 10.9:1 */
+  --agent: #1f4fd1;     /* actor: anything the agent did via WebMCP — 6.7:1. Humans have no color. */
+
+  /* Swipe layer + sheet start button (phones) */
+  --start-bg: var(--yellow); --start-fg: var(--on-yellow);
+  --done-bg: var(--green);   --done-fg: var(--paper);
+  --del-bg: var(--red);      --del-fg: var(--on-red);
+
+  --font-draft: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-text:  "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --font-mono:  ui-monospace, "SF Mono", Menlo, monospace;
+
+  --sheet-margin: 20px;
+  --field-x: 40px;
+  --section-gap: 44px;
+  --column-gap: 56px;
+  --side-column: 360px;
+  --rule: 1px;
+  --rule-heavy: 2px;
+  --radius: 0;          /* buttons, cards, inputs, menus */
+  --radius-flag: 22px;  /* the status pill */
+  --tap: 44px;
+  --swipe-open: 168px;  /* two 84px action buttons */
+
+  /* Optional overrides (defaults derive from the tokens above) */
+  --red-on-yellow: var(--red);       /* Stop + status dot when they sit on a yellow surface */
+  --on-red-on-yellow: var(--on-red);
+  --outline-surface: color-mix(in srgb, var(--ink) 6%, var(--paper));  /* swipe panels in outline mode */
+
+  /* Snapshots of the page-level colors. Yellow surfaces re-ink --ink/--sub inside them;
+     outline mode uses these to get the page colors back. Don't override these. */
+  --base-paper: var(--paper); --base-ink: var(--ink); --base-sub: var(--sub); --base-hair: var(--hair);
+  --base-red: var(--red); --base-on-red: var(--on-red); --base-agent: var(--agent);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-look]) {
+    --paper: #131517; --ink: #e9eae6; --sub: #a0a5ab; --hair: #3b3f44; --red: #ff5a4e; --on-red: #131517; --green: #3fb66a;
+    --red-on-yellow: #c8102e; --on-red-on-yellow: #ffffff; --agent: #7aa7ff;
+  }
+}
+:root[data-theme="dark"]:not([data-look]) {
+  --paper: #131517; --ink: #e9eae6; --sub: #a0a5ab; --hair: #3b3f44; --red: #ff5a4e; --on-red: #131517; --green: #3fb66a;
+  --red-on-yellow: #c8102e; --on-red-on-yellow: #ffffff; --agent: #7aa7ff;
+}
+
+/* Yellow ("now") surfaces in fill mode: the focus card while running, and the active task row.
+   Everything inside is re-inked against the yellow. */
+.focus:not([data-phase="idle"]), .task[data-active="true"] .task__front {
+  background: var(--yellow); color: var(--on-yellow);
+  --ink: var(--on-yellow); --sub: var(--on-yellow); --hair: color-mix(in srgb, var(--on-yellow) 28%, transparent);
+  --red: var(--red-on-yellow); --on-red: var(--on-red-on-yellow); --red-text: var(--on-yellow); --agent: var(--on-yellow);
+}
+
+/* ---------- Outline mode ----------
+   Surfaces keep the page color; the spot colors move to text and borders. No fills, no glow.
+   On for data-spot="outline", and by default in dark mode for the default look. */
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) {
+  --start-bg: var(--outline-surface); --start-fg: var(--yellow);
+  --done-bg: var(--outline-surface); --done-fg: var(--green);
+  --del-bg: var(--outline-surface); --del-fg: var(--red);
+}
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) :is(.focus:not([data-phase="idle"]), .task[data-active="true"] .task__front) {
+  background: var(--base-paper); color: var(--base-ink);
+  --ink: var(--base-ink); --sub: var(--base-sub); --hair: var(--base-hair); --red: var(--base-red); --on-red: var(--base-on-red); --red-text: var(--yellow); --agent: var(--base-agent);
+}
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) .focus:not([data-phase="idle"]) { border-color: var(--yellow); }
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) .focus__clock { color: var(--yellow); }
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) .task[data-active="true"] .task__front { outline: var(--rule-heavy) solid var(--yellow); outline-offset: -2px; }
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) .btn--stop { background: transparent; color: var(--red); border-color: var(--red); }
+:root:is([data-spot="outline"], [data-theme="dark"]:not([data-look]):not([data-spot])) .btn--yellow { background: transparent; color: var(--yellow); border-color: var(--yellow); }
+/* Same rules for OS dark mode (a media query can't join the :is() above) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) {
+    --start-bg: var(--outline-surface); --start-fg: var(--yellow); --done-bg: var(--outline-surface); --done-fg: var(--green); --del-bg: var(--outline-surface); --del-fg: var(--red);
+  }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) :is(.focus:not([data-phase="idle"]), .task[data-active="true"] .task__front) {
+    background: var(--base-paper); color: var(--base-ink);
+    --ink: var(--base-ink); --sub: var(--base-sub); --hair: var(--base-hair); --red: var(--base-red); --on-red: var(--base-on-red); --red-text: var(--yellow); --agent: var(--base-agent);
+  }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) .focus:not([data-phase="idle"]) { border-color: var(--yellow); }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) .focus__clock { color: var(--yellow); }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) .task[data-active="true"] .task__front { outline: var(--rule-heavy) solid var(--yellow); outline-offset: -2px; }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) .btn--stop { background: transparent; color: var(--red); border-color: var(--red); }
+  :root:not([data-theme="light"]):not([data-look]):not([data-spot]) .btn--yellow { background: transparent; color: var(--yellow); border-color: var(--yellow); }
+}
+
+/* ---------- Base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body { font-family: var(--font-text); font-size: 17px; line-height: 1.45; padding: var(--sheet-margin); min-height: 100vh; }
+:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+body[aria-busy="true"] { cursor: progress; }
+
+/* Drafting type helpers */
+.label   { font-family: var(--font-draft); font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--sub); }
+.section-h { margin: 0; font-family: var(--font-draft); font-weight: 700; font-size: 20px; letter-spacing: .1em; text-transform: uppercase; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: var(--rule-heavy) solid var(--ink); padding-bottom: 8px; }
+.section-head .count { font-family: var(--font-draft); font-weight: 600; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--sub); }
+
+/* ---------- Sheet frame ---------- */
+.sheet { border: var(--rule-heavy) solid var(--ink); min-height: calc(100vh - 2 * var(--sheet-margin)); display: flex; flex-direction: column; }
+.zones { display: flex; height: 26px; border-bottom: var(--rule) solid var(--ink); font-family: var(--font-draft); font-weight: 600; font-size: 12px; letter-spacing: .12em; color: var(--sub); }
+.zones span { flex: 1 1 0; display: grid; place-items: center; border-right: var(--rule) solid var(--hair); }
+.zones span:last-child { border-right: 0; }
+.masthead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; padding: 22px var(--field-x) 0; }
+.masthead h1 { margin: 0; font-family: var(--font-draft); font-weight: 700; font-size: 34px; line-height: 1; letter-spacing: -.01em; display: inline-flex; gap: 14px; align-items: baseline; }
+.masthead__right { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; }
+.masthead .tagline, .masthead .sheet-label { font-family: var(--font-draft); font-weight: 600; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--sub); }
+.layout { display: flex; flex-wrap: wrap; gap: var(--section-gap) var(--column-gap); padding: 28px var(--field-x) 40px; flex: 1 1 auto; }
+.layout > main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 40px; }
+.layout > aside { flex: 1 1 var(--side-column); min-width: 0; display: flex; flex-direction: column; gap: 36px; }
+
+/* ---------- Buttons ---------- */
+.btn { min-height: var(--tap); padding: 0 16px; background: transparent; color: var(--ink); border: var(--rule) solid var(--ink); border-radius: var(--radius);
+  font-family: var(--font-draft); font-weight: 600; font-size: 15px; letter-spacing: .1em; text-transform: uppercase; text-align: center; }
+.btn:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.btn--primary { border-width: var(--rule-heavy); font-weight: 700; }
+.btn--lg { min-height: 48px; padding: 0 24px; font-size: 16px; }
+.btn--pause { min-width: 132px; }  /* fits "Resume": the label swap never moves Stop */
+.btn--stop { min-width: 108px; background: var(--stop-bg, var(--red)); color: var(--stop-fg, var(--on-red)); border: var(--rule-heavy) solid var(--stop-border, var(--red)); font-weight: 700; }
+.focus[data-phase="idle"] .btn--stop { min-width: 0; background: transparent; color: var(--sub); border-color: var(--hair); font-weight: 500; }
+.btn--stop:hover { background: color-mix(in srgb, var(--red) 88%, black); }
+.btn--yellow { background: var(--yellow); color: var(--on-yellow); }
+.btn[disabled] { color: var(--sub); border-color: var(--hair); cursor: not-allowed; }
+.icon-btn { width: 40px; height: var(--tap); display: inline-grid; place-items: center; background: transparent; border: 0; color: var(--ink); }
+
+/* Status pill (the system's revision flag, used for live status only) */
+.flag { display: inline-flex; align-items: center; gap: 7px; border: 1.5px solid var(--red-text, var(--red)); color: var(--red-text, var(--red)); border-radius: var(--radius-flag);
+  padding: 2px 11px 2px 9px; font-family: var(--font-draft); font-weight: 600; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.flag::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+
+/* ---------- 1. Focus card (data-command="get_status") ---------- */
+.focus { border: var(--rule-heavy) solid var(--ink); border-radius: var(--radius); padding: clamp(20px, 3vw, 36px); display: flex; flex-direction: column; gap: 18px; }
+.focus__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.focus__task { margin: 0; font-weight: 500; font-size: clamp(20px, 2.4vw, 26px); line-height: 1.3; }
+.focus__row { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.focus__clock { font-family: var(--font-draft); font-weight: 700; font-size: clamp(84px, 13vw, 176px); line-height: .82; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.focus__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.focus__bar { height: 2px; background: var(--hair); position: relative; }
+.focus__bar > span { position: absolute; left: 0; top: -1px; height: 4px; background: var(--ink); width: var(--progress, 0%); transition: width 1s linear; }
+.focus__meta { display: flex; justify-content: space-between; }
+.focus__idle-title { margin: 0; font-family: var(--font-draft); font-weight: 700; font-size: clamp(40px, 5vw, 60px); line-height: .95; letter-spacing: -.01em; }
+.focus__idle-copy { margin: 0; color: var(--sub); max-width: 52ch; }
+.focus[data-phase="idle"] [data-when="running"],
+.focus:not([data-phase="idle"]) [data-when="idle"],
+.focus:not([data-phase="focus"]) [data-when="focus"],
+.focus:not([data-phase="paused"]) [data-when="paused"] { display: none; }
+.focus [data-field="paused-age"] { text-transform: none; letter-spacing: normal; font-family: var(--font-text); font-weight: 500; font-size: 17px; }
+.focus[data-paused-fade="true"] .flag::before { background: var(--paused-icon, var(--red)); }
+.focus[data-paused-fade="true"] .focus__bar > span { background: var(--paused-accent, var(--ink)); }
+
+/* Paused cards. Decorative tint, border, icon, and accent are solid mixes.
+   Title, time, resume, and close are solid colors — no opacity, scale, or clip. */
+.paused-head { display: flex; justify-content: flex-end; }
+.show-stale { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 15px; }
+.paused-board { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.paused-board:empty { display: none; }
+.paused-card { list-style: none; border: var(--rule-heavy) solid var(--ink); border-radius: var(--radius); padding: 12px; display: grid; grid-template-columns: auto 1fr auto auto; grid-template-areas: "icon title resume close" "icon time resume close" "icon age resume close" "accent accent accent accent"; gap: 4px 12px; align-items: center; overflow: visible; }
+.paused-card__icon { grid-area: icon; display: grid; place-items: center; }
+.paused-card__title { grid-area: title; margin: 0; font-weight: 500; }
+.paused-card__time { grid-area: time; margin: 0; font-family: var(--font-draft); font-weight: 700; font-size: 28px; line-height: 1; font-variant-numeric: tabular-nums; }
+.paused-card__age { grid-area: age; margin: 0; text-transform: none; }
+.paused-card__accent { grid-area: accent; height: 4px; }
+.paused-card__resume,
+.paused-card__close { min-width: 44px; min-height: 44px; }
+@media (prefers-reduced-motion: reduce) { .focus__bar > span { transition: none; } }
+
+/* ---------- Messages ---------- */
+.notice { border-radius: var(--radius); display: flex; gap: 14px; align-items: flex-start; border: 1.5px solid var(--red); padding: 14px 16px; }
+.notice svg { flex: none; color: var(--red); margin-top: 1px; }
+.notice__title { margin: 0 0 2px; font-weight: 500; }
+.notice__body { margin: 0; font-size: 15px; color: var(--sub); }
+.notice__body code { font-family: var(--font-mono); font-size: 13px; }
+[data-rejection]:empty, [data-result]:empty { display: none; }
+[data-result] { margin: 0; font-size: 15px; color: var(--sub); }
+
+/* ---------- 2. Task list (data-command="list_tasks") ---------- */
+.tasks { list-style: none; margin: 0; padding: 0; }
+.task { position: relative; border-bottom: var(--rule) solid var(--hair); }
+.task__front { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 8px 6px 8px 0; background: var(--paper); }
+.task__under { display: none; }
+.task__grip { flex: none; width: 28px; height: var(--tap); display: grid; place-items: center; background: transparent; border: 0; color: var(--sub); cursor: grab; touch-action: none; }
+.task__check { flex: none; width: 20px; height: 20px; margin: 0 4px 0 0; accent-color: var(--green); }
+.task__open { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 6px 0; background: transparent; border: 0; color: inherit; text-align: left; cursor: default; }
+.task__title { overflow-wrap: anywhere; }
+.task__start { flex: none; min-width: 76px; min-height: 40px; font-size: 14px; }
+.task__more { opacity: .55; }
+.task:hover .task__more, .task:focus-within .task__more, .task__more[aria-expanded="true"] { opacity: 1; }
+@media (hover: none) { .task__more { opacity: 1; } }
+/* Active task */
+.task[data-active="true"] .task__front { outline: var(--rule-heavy) solid var(--ink); outline-offset: -2px; border-radius: var(--radius); }
+.task[data-active="true"] .task__title { font-weight: 600; }
+/* The running row keeps Start so the same command can reject pomodoro_already_running. Other rows say Switch. */
+.task:not([data-active="true"]) .flag { display: none; }
+/* Desktop dragging */
+.task[data-dragging="true"] { opacity: .5; }
+.task[data-drop="before"] { box-shadow: inset 0 2px 0 var(--ink); }
+.task[data-drop="after"]  { box-shadow: inset 0 -2px 0 var(--ink); }
+/* Completed */
+.task[data-status="completed"] .task__front { padding-left: 38px; }
+.task[data-status="completed"] .task__title { color: var(--sub); text-decoration: line-through; }
+.task[data-status="completed"] :is(.task__grip, .task__start, .task__more, .flag) { display: none; }
+
+/* Overflow menu (desktop) */
+.menu { border-radius: var(--radius); overflow: hidden; position: absolute; right: 6px; top: calc(100% - 4px); z-index: 5; min-width: 200px; background: var(--paper); border: var(--rule-heavy) solid var(--ink); display: flex; flex-direction: column; }
+.menu[hidden] { display: none; }
+.menu button { min-height: var(--tap); padding: 0 16px; background: transparent; border: 0; border-bottom: var(--rule) solid var(--hair); text-align: left; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.menu button:last-child { border-bottom: 0; }
+.menu button:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.menu kbd { font-family: var(--font-mono); font-size: 12px; color: var(--sub); }
+.menu .danger { color: var(--red); font-weight: 500; }
+
+/* ---------- 3. Add task ---------- */
+.add { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; padding-top: 14px; }
+.add__field { border-radius: var(--radius); flex: 1 1 240px; display: flex; align-items: center; gap: 10px; border: var(--rule) solid var(--ink); min-height: 48px; padding: 0 12px; }
+.add__field:focus-within { outline: 2px solid var(--red); outline-offset: 2px; }
+.add__field input { flex: 1 1 auto; min-width: 0; width: 100%; border: 0; background: transparent; height: 44px; outline: none; }
+.add__field input::placeholder, textarea::placeholder { color: var(--sub); opacity: 1; }
+.add__field kbd { flex: none; font-family: var(--font-mono); font-size: 12px; color: var(--sub); border: var(--rule) solid var(--hair); padding: 2px 6px; }
+
+.done-head { margin-top: 28px; display: flex; justify-content: space-between; align-items: baseline; border-bottom: var(--rule) solid var(--ink); padding-bottom: 6px; }
+.done-head[hidden] { display: none; }
+.done-head h3, .done-head .label { margin: 0; font-family: var(--font-draft); font-weight: 700; font-size: 15px; letter-spacing: .1em; text-transform: uppercase; color: var(--green); }
+[data-field="tb-done"] { color: var(--green); font-weight: 600; }
+
+/* ---------- 4. Activity ---------- */
+.activity { list-style: none; margin: 0; padding: 0; }
+.activity li { display: flex; gap: 10px; align-items: baseline; padding: 11px 0; border-bottom: var(--rule) solid var(--hair); font-size: 15px; line-height: 1.4; }
+.who { flex: none; width: 50px; text-align: center; padding: 2px 0; font-family: var(--font-draft); font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.who[data-actor="agent"] { border: 1.5px solid var(--agent); color: var(--agent); }
+.who[data-actor="human"] { border: var(--rule) solid var(--hair); color: var(--sub); }
+.activity time { color: var(--sub); white-space: nowrap; }
+.ticker, .swipe-hint { display: none; }  /* phone only */
+.ticker[hidden] { display: none !important; }
+
+/* ---------- 5. Advanced drawer ---------- */
+.advanced { border: var(--rule) solid var(--ink); border-radius: var(--radius); }
+.advanced > summary { list-style: none; min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 14px; cursor: pointer; }
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before { content: ""; width: 7px; height: 7px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
+.advanced[open] > summary::before { transform: rotate(45deg); }
+.advanced > summary .title { flex: 1 1 auto; font-family: var(--font-draft); font-weight: 700; font-size: 16px; letter-spacing: .1em; text-transform: uppercase; }
+#status { font-family: var(--font-draft); font-weight: 600; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--sub); }
+#status[data-ready="false"]::after { content: " …"; }
+.advanced__body { border-top: var(--rule) solid var(--ink); padding: 16px 14px 18px; display: flex; flex-direction: column; gap: 22px; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.row-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+textarea { font-family: var(--font-mono); font-size: 13px; line-height: 1.5; padding: 10px; background: transparent; border: var(--rule) solid var(--ink); border-radius: var(--radius); resize: vertical; width: 100%; }
+.file-btn { position: relative; display: inline-flex; align-items: center; border-style: dashed; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.file-btn:focus-within { outline: 2px solid var(--red); outline-offset: 2px; }
+.commands { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
+.commands [data-planned] { color: var(--sub); }
+
+/* Title block */
+.title-block { border: var(--rule-heavy) solid var(--ink); border-radius: var(--radius); overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.title-block > div { padding: 8px 12px; border-bottom: var(--rule) solid var(--ink); }
+.title-block > div:nth-child(even) { border-right: var(--rule) solid var(--ink); }
+.title-block > div:first-child { grid-column: 1 / -1; }
+.title-block > div:nth-last-child(-n+2) { border-bottom: 0; }
+.title-block dt { margin: 0; }
+.title-block dd { margin: 0; font-weight: 500; font-size: 15px; }
+.title-block .tb-title { font-family: var(--font-draft); font-weight: 700; font-size: 20px; letter-spacing: .02em; }
+
+/* ---------- Tandem: who did what ----------
+   Humans act through the page; the agent acts through WebMCP. The agent's work is marked in --agent;
+   yours stays plain ink, because you saw yourself do it. */
+
+/* Actor chip, inline in meta lines and the focus card: <span class="actor" data-actor="agent|human">Agent|You</span> */
+.actor { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.actor[data-actor="agent"] { color: var(--agent); }
+.actor[data-actor="agent"]::before { content: ""; width: 6px; height: 6px; border: 1.5px solid currentColor; transform: rotate(45deg); }  /* diamond = agent */
+.actor[data-actor="human"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }      /* dot = you */
+
+/* Touch mark: main.ts sets data-touched="agent" and data-touched-tool on the row's .task__front / the focus card the agent just changed,
+   and removes it after 4 s. A dashed --agent frame plus an "Agent" tag, fading out. */
+.focus { position: relative; }
+:is(.task__front[data-touched="agent"], .focus[data-touched="agent"])::before {
+  content: ""; position: absolute; inset: 0; border: var(--rule-heavy) dashed var(--agent); border-radius: var(--radius); pointer-events: none;
+  animation: agent-touch 4s ease-out forwards; }
+:is(.task__front[data-touched="agent"], .focus[data-touched="agent"])::after {
+  content: "Agent · " attr(data-touched-tool); position: absolute; top: 0; right: 0; z-index: 2; padding: 1px 7px; background: var(--agent); color: var(--base-paper);
+  font-family: var(--font-mono); font-size: 10px; line-height: 16px; letter-spacing: 0; pointer-events: none; animation: agent-touch 4s ease-out forwards; }
+@keyframes agent-touch { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+/* Presence, in the masthead: is an agent working right now, and with which tool? */
+.presence { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-draft); font-weight: 600; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--sub); }
+.presence__mark { width: 9px; height: 9px; border: 1.5px solid var(--agent); transform: rotate(45deg); }
+.presence[data-state="active"] { color: var(--agent); }
+.presence[data-state="active"] .presence__mark { background: var(--agent); animation: agent-pulse 1.2s ease-in-out infinite; }
+.presence code { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; text-transform: none; }
+@keyframes agent-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  :is(.task__front[data-touched="agent"], .focus[data-touched="agent"])::before,
+  :is(.task__front[data-touched="agent"], .focus[data-touched="agent"])::after,
+  .presence[data-state="active"] .presence__mark { animation: none; }
+}
+
+/* ---------- Phone overlays (dialog + undo bar) ---------- */
+dialog.action-sheet { border-radius: var(--radius) var(--radius) 0 0; margin: auto 0 0; width: 100%; max-width: 100%; padding: 6px 0 calc(16px + env(safe-area-inset-bottom)); border: 0; border-top: var(--rule-heavy) solid var(--ink); background: var(--paper); color: var(--ink); }
+dialog.action-sheet::backdrop { background: rgba(10, 11, 12, .5); }
+.action-sheet__grab { width: 40px; height: 4px; background: var(--hair); margin: 4px auto 10px; }
+.action-sheet header { padding: 0 20px 12px; border-bottom: var(--rule) solid var(--ink); }
+.action-sheet header p { margin: 2px 0 0; font-size: 19px; line-height: 1.3; font-weight: 500; }
+.sheet-btn { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 20px; background: transparent; color: var(--ink); border: 0; border-bottom: var(--rule) solid var(--hair); text-align: left; font-size: 17px; }
+.sheet-btn[disabled] { color: var(--sub); }
+.sheet-btn__hint { margin-left: auto; font-family: var(--font-draft); font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--sub); }
+.sheet-btn--start { background: var(--start-bg); color: var(--start-fg); border-bottom-color: var(--ink); font-family: var(--font-draft); font-weight: 700; font-size: 17px; letter-spacing: .1em; text-transform: uppercase; }
+.sheet-btn--start .sheet-btn__hint { color: inherit; }
+.sheet-btn--start[hidden] { display: none; }
+.sheet-btn--done { color: var(--green); font-weight: 500; }
+.sheet-btn--danger { color: var(--red); font-weight: 500; }
+.sheet-btn--cancel { justify-content: center; border-bottom: 0; font-family: var(--font-draft); font-weight: 700; font-size: 16px; letter-spacing: .1em; text-transform: uppercase; }
+
+.undo-bar { border-radius: var(--radius); position: fixed; left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 21; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 4px 0 16px; background: var(--ink); color: var(--paper); }
+.undo-bar[hidden] { display: none; }
+.undo-bar span { flex: 1 1 auto; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undo-bar button { flex: none; min-height: var(--tap); padding: 0 14px; background: transparent; border: 0; color: var(--paper); text-decoration: underline; text-underline-offset: 3px; font-family: var(--font-draft); font-weight: 700; font-size: 15px; letter-spacing: .1em; text-transform: uppercase; }
+
+/* ---------- Phones ---------- */
+@media (max-width: 600px) {
+  :root { --sheet-margin: 10px; --field-x: 18px; --section-gap: 32px; }
+  .zones span:nth-child(n+5) { display: none; }
+  .masthead .tagline, .masthead .sheet-label { display: none; }
+  .layout { padding-top: 20px; padding-bottom: calc(112px + env(safe-area-inset-bottom)); }  /* room for the pinned add bar */
+  .layout > main { gap: 24px; }
+  .focus__actions { width: 100%; }
+  .focus__actions .btn { flex: 1 1 0; }
+  .activity-panel { display: none; }
+
+  /* Activity becomes a one-line strip under the focus card */
+  .ticker { display: block; border-top: var(--rule) solid var(--ink); border-bottom: var(--rule) solid var(--ink); }
+  .ticker > summary { list-style: none; min-height: 48px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .ticker > summary::-webkit-details-marker { display: none; }
+  .ticker > summary::after { content: ""; flex: none; width: 7px; height: 7px; margin-right: 4px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
+  .ticker[open] > summary::after { transform: rotate(45deg); }
+  .ticker__text { flex: 1 1 auto; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ticker .activity { border-top: var(--rule) solid var(--hair); }
+  .ticker .activity li { font-size: 14px; padding: 9px 0; }
+
+  .swipe-hint:not([hidden]) { display: flex; align-items: center; gap: 12px; margin: 0; padding: 10px 0; border-bottom: var(--rule) solid var(--hair); font-size: 14px; line-height: 1.4; color: var(--sub); }
+  .swipe-hint svg { flex: none; color: var(--ink); }
+  .swipe-hint span { flex: 1 1 auto; }
+  .swipe-hint .icon-btn { margin: -10px -12px -10px 0; }
+
+  /* Rows: full-bleed, checkbox + title only; actions live under the row (swipe) and in the action sheet (tap) */
+  .tasks { margin: 0 calc(-1 * var(--field-x)); }
+  .task { overflow: hidden; }
+  .task__front { gap: 14px; min-height: 62px; padding: 0 14px 0 18px; transform: translateX(var(--dx, 0px)); transition: transform .22s ease; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+  .task[data-swiping="true"] .task__front { transition: none; }
+  .task__grip, .task__start, .task__more, .menu { display: none !important; }
+  .task__check { width: 22px; height: 22px; margin: 0; }
+  .task__open { min-height: 60px; padding: 8px 0; justify-content: center; gap: 3px; cursor: pointer; }
+  .task__title { font-size: 16px; line-height: 1.3; }
+  .flag { font-size: 11px; padding: 2px 9px 2px 7px; }
+  .task[data-status="completed"] .task__front { padding-left: 54px; }
+  .task[data-lifted="true"] .task__front { outline: var(--rule-heavy) dashed var(--ink); outline-offset: -5px; z-index: 2; }
+
+  /* Swipe layer. gestures.ts sets --dx on .task and data-swipe = right | open | full-left */
+  .task__under { display: block; position: absolute; inset: 0; font-family: var(--font-draft); font-weight: 700; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+  .under-start { position: absolute; inset: 0; display: none; align-items: center; gap: 10px; padding-left: 20px; background: var(--start-bg); color: var(--start-fg); font-size: 15px; }
+  .under-actions { position: absolute; top: 0; bottom: 0; right: 0; width: var(--swipe-open); display: none; }
+  .under-actions button { flex: 1 1 0; min-width: 0; border: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; overflow: hidden; white-space: nowrap; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+  .under-done { background: var(--done-bg); color: var(--done-fg); }
+  .under-delete { background: var(--del-bg); color: var(--del-fg); padding: 0 18px; }
+  .task[data-swipe="right"] .under-start { display: flex; }
+  .task:is([data-swipe="open"], [data-swipe="full-left"]) .under-actions { display: flex; }
+  .task[data-swipe="full-left"] .under-actions { width: 100%; }
+  .task[data-swipe="full-left"] .under-done { display: none; }
+  .task[data-swipe="full-left"] .under-delete { align-items: flex-end; }
+
+  /* Add task: the same form, pinned to the bottom of the screen within thumb reach */
+  .add { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; flex-wrap: nowrap; gap: 8px; margin: 0; padding: 10px 12px calc(14px + env(safe-area-inset-bottom)); background: var(--paper); border-top: var(--rule-heavy) solid var(--ink); }
+  .add__field { flex: 1 1 0; min-width: 0; }
+  .add__field kbd, .add__field svg { display: none; }
+  .add .btn { flex: none; padding: 0 16px; border-width: var(--rule-heavy); }
+}

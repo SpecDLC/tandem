@@ -1,0 +1,35 @@
+{
+  "name": "tandem-build",
+  "version": "1.0.0",
+  "description": "Tandem reference build",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "dev": "vite",
+    "typecheck": "tsc -p .",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "smoke": "node tools/smoke.mjs",
+    "check:projection": "node tools/project.mjs --check",
+    "witness": "node --test \"test/witness/*.witness.mjs\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpecDLC/tandem-build.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/SpecDLC/tandem-build/issues"
+  },
+  "homepage": "https://github.com/SpecDLC/tandem-build#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "cloudevents": "^10.0.0",
+    "playwright": "^1.64.1",
+    "typescript": "^7.0.2",
+    "ulid": "^3.0.2",
+    "vite": "^8.3.4",
+    "webmcp-types": "^0.1.9"
+  },
+  "private": "true"
+}
