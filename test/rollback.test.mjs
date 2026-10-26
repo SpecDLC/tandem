@@ -169,7 +169,12 @@ test("the workflow starts only by hand and a dry run cannot deploy", () => {
   const pushPart = revertPart.slice(0, revertPart.indexOf("Wait until deploy"));
   assert.equal(pushPart.includes("GITHUB_TOKEN"), false);
   assert.equal(pushPart.includes("contents: write"), false);
-  assert.match(pushPart, /http\.extraheader=AUTHORIZATION: bearer/);
+  assert.match(pushPart, /persist-credentials: false/);
+  assert.match(pushPart, /x-access-token:%s/);
+  assert.match(pushPart, /::add-mask::/);
+  assert.match(pushPart, /http\.extraheader=AUTHORIZATION: basic/);
+  assert.equal(pushPart.includes("bearer"), false);
+  assert.equal(pushPart.includes("https://x-access-token:"), false);
   assert.match(pushPart, /push origin HEAD:main/);
   assert.equal(revertPart.includes("wrangler"), false);
   assert.match(redeployPart, /inputs\.dry_run == false && inputs\.action == 'redeploy-sha'/);
