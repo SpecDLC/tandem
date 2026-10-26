@@ -18,6 +18,12 @@ export const EVENT_TYPES = {
 } as const;
 const KNOWN_TYPES: ReadonlySet<string> = new Set(Object.values(EVENT_TYPES));
 
+/** Who did a command. New events store this object. Old lines keep a string, or no actor at all. */
+export interface Actor {
+  kind: "human" | "agent";
+  name: string;
+}
+
 export interface SessionEvent {
   specversion: typeof SPECVERSION;
   id: string;
@@ -27,8 +33,15 @@ export interface SessionEvent {
   time: string;
   datacontenttype: "application/json";
   dataschema: string;
-  actor: string;
+  /** Object on a new event. A string, or absent, on a line written before this version. */
+  actor?: Actor | string;
   data: Record<string, unknown>;
+}
+
+export function isActor(v: unknown): v is Actor {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const a = v as Record<string, unknown>;
+  return (a.kind === "human" || a.kind === "agent") && typeof a.name === "string" && a.name.trim() !== "";
 }
 
 // Reference export key order: core attributes, then actor, then data.
@@ -51,11 +64,62 @@ export function parseJsonl(text: string): unknown[] {
   return text.split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l) as unknown);
 }
 
+/** First line of an exported log file. A file from before this version has no header. */
+export const LOG_FORMAT = "tandem.session-log";
+export const LOG_VERSION = 1;
+
+export function formatLogFile(events: readonly object[]): string {
+  const header = JSON.stringify({ format: LOG_FORMAT, version: LOG_VERSION });
+  const body = toJsonl(events);
+  return `${header}\n${body}`;
+}
+
+function isHeader(v: unknown): v is { format: string; version: number } {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.format === "string" && typeof o.version === "number" && o.specversion === undefined;
+}
+
+/** Read a log file. A bad line rejects the file. Nothing here sends the file anywhere. */
+export function parseLogFile(text: string): { ok: true; events: unknown[] } | { ok: false; code: "invalid_events" } {
+  const lines = text.split("\n").filter((l) => l.length > 0);
+  if (lines.length === 0) return { ok: true, events: [] };
+  const head = lines[0];
+  if (head === undefined) return { ok: false, code: "invalid_events" };
+  let first: unknown;
+  try { first = JSON.parse(head) as unknown; } catch { return { ok: false, code: "invalid_events" }; }
+  let start = 0;
+  if (isHeader(first)) {
+    if (first.format !== LOG_FORMAT || first.version !== LOG_VERSION) return { ok: false, code: "invalid_events" };
+    start = 1;
+  }
+  const events: unknown[] = [];
+  for (const line of lines.slice(start)) {
+    try { events.push(JSON.parse(line) as unknown); } catch { return { ok: false, code: "invalid_events" }; }
+  }
+  if (events.some((e) => !isSessionEvent(e))) return { ok: false, code: "invalid_events" };
+  return { ok: true, events };
+}
+
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 
-// Structural check for import_events: a CloudEvents 1.0 object in this profile's core.
-// It does not re-run command rejection rules.
+/** A missing actor and a string actor are old lines. An actor object must name a human or an agent. */
+function actorOk(e: Record<string, unknown>): boolean {
+  if (!("actor" in e) || e.actor === undefined) return true;
+  if (typeof e.actor === "string") return true;
+  return isActor(e.actor);
+}
+
+/** Minutes, when present, are the resolved focus length. Absence is an old line and stays valid. */
+function minutesOk(data: Record<string, unknown>): boolean {
+  if (!("minutes" in data)) return true;
+  const m = data.minutes;
+  return typeof m === "number" && Number.isInteger(m) && m >= 1 && m <= 180;
+}
+
+// Structural check for import. It does not re-run command rejection rules.
+// A file that holds one failing event is rejected as a whole by the caller.
 export function isSessionEvent(v: unknown): v is SessionEvent {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const e = v as Record<string, unknown>;
@@ -64,8 +128,8 @@ export function isSessionEvent(v: unknown): v is SessionEvent {
     e.specversion === SPECVERSION && nonEmpty(e.id) && e.source === SOURCE &&
     typeof e.type === "string" && KNOWN_TYPES.has(e.type) &&
     nonEmpty(e.subject) && typeof e.time === "string" && ISO_UTC.test(e.time) && !Number.isNaN(Date.parse(e.time)) &&
-    nonEmpty(e.actor) && /^(human|agent):/.test(e.actor) &&
-    typeof data === "object" && data !== null && !Array.isArray(data)
+    actorOk(e) &&
+    typeof data === "object" && data !== null && !Array.isArray(data) && minutesOk(data as Record<string, unknown>)
   );
 }
 
@@ -73,6 +137,23 @@ export function isSessionEvent(v: unknown): v is SessionEvent {
 export function createIdMinter(): (timeMs: number) => string {
   const next = monotonicFactory();
   return (timeMs) => next(timeMs);
+}
+
+/**
+ * Fold order is the recorded `time` instant, then `id`.
+ * The clock embedded in a ULID is not an ordering key.
+ */
+export function compareEvents(a: { time: string; id: string }, b: { time: string; id: string }): number {
+  const dt = Date.parse(a.time) - Date.parse(b.time);
+  if (dt < 0) return -1;
+  if (dt > 0) return 1;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+export function inFoldOrder<T extends { time: string; id: string }>(events: readonly T[]): T[] {
+  return [...events].sort(compareEvents);
 }
 
 // The working copy. Holds serialized lines in append order and never rewrites one.

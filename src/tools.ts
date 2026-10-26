@@ -1,22 +1,41 @@
-// Tool registration. One tool per command, named as the command, each calling the same bound function a control calls.
-import { COMMAND_NAMES, type CommandName } from "./registry.ts";
+// Tool registration. One tool per command, named as the command, each calling the same function a control calls.
+import { COMMAND_NAMES, bind, isActor, type CommandName, type Session } from "./registry.ts";
+
+type ToolName = Exclude<CommandName, "import_events">;
+const TOOL_NAMES = COMMAND_NAMES.filter((name): name is ToolName => name !== "import_events");
 
 type Schema = Record<string, unknown>;
 const obj = (properties: Schema = {}, required: string[] = []): Schema => ({ type: "object", properties, required });
 const str = (description: string): Schema => ({ type: "string", description });
+const actor = {
+  type: "object",
+  description: "Who did this. kind is human or agent. name is the label stored on the event and shown in the activity feed.",
+  properties: {
+    kind: { type: "string", enum: ["human", "agent"] },
+    name: { type: "string" },
+  },
+  required: ["kind", "name"],
+};
 
-const SPEC: Record<CommandName, { description: string; inputSchema: Schema; readOnly?: boolean }> = {
+const RECORDS_ACTOR = new Set<CommandName>([
+  "import_tasks", "add_task", "complete_task", "start_pomodoro",
+  "pause_pomodoro", "resume_pomodoro", "stop_pomodoro",
+]);
+
+const expectedCursor = str("Optional. When present, must be the current export_events cursor. Otherwise the command returns stale_cursor and appends nothing.");
+
+const SPEC: Record<ToolName, { description: string; inputSchema: Schema; readOnly?: boolean }> = {
   import_tasks: {
     description: "Import tasks. Input is the payload itself: schema \"tandem.tasks/v0\" and a tasks array of { id?, title, estimate_pomodoros?, notes? }. Returns accepted, task_ids, rejected rows with a path, skipped, and ignored_fields. Pass a returned task_id back to start_pomodoro or complete_task.",
-    inputSchema: obj({ schema: str("Must be tandem.tasks/v0"), tasks: { type: "array", items: { type: "object" } } }, ["schema", "tasks"]),
+    inputSchema: obj({ actor, schema: str("Must be tandem.tasks/v0"), tasks: { type: "array", items: { type: "object" } }, expected_cursor: expectedCursor }, ["actor", "schema", "tasks"]),
   },
   add_task: {
     description: "Add one task. Returns its task_id. Pass that task_id back to start_pomodoro or complete_task.",
-    inputSchema: obj({ title: str("Task title"), estimate_pomodoros: { type: "integer", minimum: 0 } }, ["title"]),
+    inputSchema: obj({ actor, title: str("Task title"), estimate_pomodoros: { type: "integer", minimum: 0 }, expected_cursor: expectedCursor }, ["actor", "title"]),
   },
   complete_task: {
     description: "Complete an open task by the task_id a previous result returned.",
-    inputSchema: obj({ task_id: str("A task_id from import_tasks, add_task, or list_tasks") }, ["task_id"]),
+    inputSchema: obj({ actor, task_id: str("A task_id from import_tasks, add_task, or list_tasks"), expected_cursor: expectedCursor }, ["actor", "task_id"]),
   },
   list_tasks: {
     description: "List tasks with their task_id and status. The optional status filter is open or completed.",
@@ -24,20 +43,25 @@ const SPEC: Record<CommandName, { description: string; inputSchema: Schema; read
     readOnly: true,
   },
   start_pomodoro: {
-    description: "Start the one pomodoro on an open task by task_id. Returns pomodoro_id and ends_at. Rejected with pomodoro_already_running while one runs or an in-window paused pomodoro exists.",
-    inputSchema: obj({ task_id: str("A task_id from list_tasks") }, ["task_id"]),
+    description: "Start the one pomodoro on an open task by task_id. Optional minutes is an integer from 1 to 180; omit it for 25. The start event stores that number. Returns pomodoro_id, ends_at, and minutes. Rejected with pomodoro_already_running while one runs or an in-window paused pomodoro exists.",
+    inputSchema: obj({
+      actor,
+      task_id: str("A task_id from list_tasks"),
+      minutes: { type: "integer", minimum: 1, maximum: 180, description: "Focus length in minutes. Omit for 25." },
+      expected_cursor: expectedCursor,
+    }, ["actor", "task_id"]),
   },
   pause_pomodoro: {
     description: "Pause the focus timer. Appends pomodoro_paused with pomodoro_id and remaining_seconds at the pause instant. Rejected with no_running_pomodoro outside focus.",
-    inputSchema: obj(),
+    inputSchema: obj({ actor, expected_cursor: expectedCursor }, ["actor"]),
   },
   resume_pomodoro: {
     description: "Resume a paused pomodoro by pomodoro_id. Appends pomodoro_resumed with ends_at set to now plus the frozen remaining seconds. Rejected with pomodoro_already_running when another pomodoro is running or paused inside the roll-off window.",
-    inputSchema: obj({ pomodoro_id: str("The pomodoro_id of a paused card, including one past the roll-off window") }, ["pomodoro_id"]),
+    inputSchema: obj({ actor, pomodoro_id: str("The pomodoro_id of a paused card, including one past the roll-off window"), expected_cursor: expectedCursor }, ["actor", "pomodoro_id"]),
   },
   stop_pomodoro: {
     description: "Stop the running pomodoro, or the in-window paused one (Close). Pass pomodoro_id to close that paused card, including one past the roll-off window. Appends pomodoro_stopped. Rejected with no_running_pomodoro when nothing matches.",
-    inputSchema: obj({ pomodoro_id: str("Optional. A paused card to close, including one past the roll-off window. Omit to stop the running or in-window paused pomodoro.") }),
+    inputSchema: obj({ actor, pomodoro_id: str("Optional. A paused card to close, including one past the roll-off window. Omit to stop the running or in-window paused pomodoro."), expected_cursor: expectedCursor }, ["actor"]),
   },
   get_status: {
     description: "Read the phase (idle, focus, break, or paused), the task, the seconds remaining, and the in-window paused list. Uses the default 3-day roll-off and omits stale paused sessions.",
@@ -49,41 +73,43 @@ const SPEC: Record<CommandName, { description: string; inputSchema: Schema; read
     inputSchema: obj({ since_cursor: str("A cursor a previous export_events returned") }),
     readOnly: true,
   },
-  import_events: {
-    description: "Append session events unchanged, ids included. Input is { events: [...] }. Events already present are skipped by id.",
-    inputSchema: obj({ events: { type: "array", items: { type: "object" } } }, ["events"]),
-  },
+
 };
 
 /** How a tool's input object becomes the command's arguments. A control builds the same arguments from the page. */
-const ARGS: Record<CommandName, (i: Record<string, unknown>) => unknown[]> = {
+const ARGS: Record<ToolName, (i: Record<string, unknown>) => unknown[]> = {
   import_tasks: (i) => [i],
-  add_task: (i) => [i.title, i.estimate_pomodoros],
-  complete_task: (i) => [i.task_id],
+  add_task: (i) => [i.title, i.estimate_pomodoros, i.expected_cursor],
+  complete_task: (i) => [i.task_id, i.expected_cursor],
   list_tasks: (i) => [i.status],
-  start_pomodoro: (i) => [i.task_id],
-  pause_pomodoro: () => [],
-  resume_pomodoro: (i) => [i.pomodoro_id],
-  stop_pomodoro: (i) => [i.pomodoro_id],
+  start_pomodoro: (i) => [i.task_id, i.minutes, i.expected_cursor],
+  pause_pomodoro: (i) => [i.expected_cursor],
+  resume_pomodoro: (i) => [i.pomodoro_id, i.expected_cursor],
+  stop_pomodoro: (i) => [i.pomodoro_id, i.expected_cursor],
   get_status: () => [],
   export_events: (i) => [i.since_cursor],
-  import_events: (i) => [i.events],
+
 };
 
-/** Register every command on document.modelContext. `after` runs once the agent's command is done. It sees the name and the result, never an actor. */
+const READ_ACTOR = { kind: "human" as const, name: "You" };
+
+/** Register agent tools on document.modelContext. import_events stays on the page control only. */
 export async function registerTools(
   context: NonNullable<Document["modelContext"]>,
-  commands: Record<CommandName, (...a: never[]) => unknown>,
+  session: Session,
   after: (name: CommandName, result: unknown) => void,
 ): Promise<void> {
-  for (const name of COMMAND_NAMES) {
-    const run = commands[name] as (...a: unknown[]) => unknown;
+  for (const name of TOOL_NAMES) {
     await context.registerTool({
       name,
       description: SPEC[name].description,
       inputSchema: SPEC[name].inputSchema,
       annotations: { readOnlyHint: SPEC[name].readOnly === true },
       execute: async (input: Record<string, unknown>) => {
+        const given = input?.actor;
+        if (RECORDS_ACTOR.has(name) && !isActor(given)) return { ok: false, code: "invalid_payload" };
+        const commands = bind(session, isActor(given) ? given : READ_ACTOR);
+        const run = commands[name] as (...a: unknown[]) => unknown;
         const r = await run(...ARGS[name](input ?? {}));
         after(name, r);
         return r;

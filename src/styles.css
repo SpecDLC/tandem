@@ -233,6 +233,8 @@ body[aria-busy="true"] { cursor: progress; }
 .task[data-status="completed"] .task__front { padding-left: 38px; }
 .task[data-status="completed"] .task__title { color: var(--sub); text-decoration: line-through; }
 .task[data-status="completed"] :is(.task__grip, .task__start, .task__more, .flag) { display: none; }
+.conflict:not([hidden]) { display: block; margin-top: 4px; color: var(--red-text, var(--red)); font-size: 13px; }
+#sync-settings input { font-family: var(--font-mono); font-size: 13px; line-height: 1.4; padding: 10px; background: transparent; border: var(--rule) solid var(--ink); border-radius: var(--radius); width: 100%; }
 
 /* Overflow menu (desktop) */
 .menu { border-radius: var(--radius); overflow: hidden; position: absolute; right: 6px; top: calc(100% - 4px); z-index: 5; min-width: 200px; background: var(--paper); border: var(--rule-heavy) solid var(--ink); display: flex; flex-direction: column; }

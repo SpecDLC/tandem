@@ -67,7 +67,14 @@ export async function exportLog(page) {
   const [dl] = await Promise.all([page.waitForEvent("download"), click(page, "[data-command='export_events']")]);
   return readFile(await dl.path(), "utf8");
 }
-export const events = (jsonl) => jsonl.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+export const events = (jsonl) => {
+  const rows = jsonl.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  if (rows.length && rows[0] && typeof rows[0] === "object" && rows[0].format && rows[0].specversion === undefined) rows.shift();
+  return rows;
+};
+
+/** Default actor for an in-page tool call. A test can override `input.actor`. */
+export const AGENT = { kind: "agent", name: "Agent" };
 
 /**
  * Reads the stable hooks, not the visible sentences.
@@ -99,7 +106,8 @@ export async function screen(page) {
         ...[...out.querySelectorAll("[data-skip-id]")].map((s) => `skipped ${s.dataset.skipId}: ${s.dataset.code}`),
         ...[...out.querySelectorAll("[data-ignored-path]")].map((f) => `ignored field ${f.dataset.ignoredPath}`)].join("");
     } else if (out.dataset.kind === "import-events") {
-      result = `imported ${out.dataset.imported}, rejected ${out.dataset.rejected}, skipped ${out.dataset.skipped}`;
+      const note = out.dataset.note ? ` ${out.dataset.note}` : "";
+      result = `imported ${out.dataset.imported}, rejected ${out.dataset.rejected}, skipped ${out.dataset.skipped}${note}`;
     } else if (out.dataset.kind === "export") {
       result = `exported ${out.dataset.count} events`;
     } else result = out.textContent;

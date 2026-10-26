@@ -18,8 +18,9 @@ Tandem is a local-first focus session that a person and an agent drive through o
 | [templates/sync.md](templates/sync.md) | Default sync path and schedule |
 | [scripts/sync-jsonl.mjs](scripts/sync-jsonl.mjs) | Idempotent append of exported events to a JSONL file |
 | [GUIDE.md](GUIDE.md) | How to build a runtime from the cards, and a walkthrough of one session from a person and from an agent, then the JSONL sync replay |
+| [ROADMAP.md](ROADMAP.md) | Planned, shipped, and open behavior. Maintained by Texian. |
 
-`cards/`, `spec/`, and `projections/` are generated from a ledger. Edit proposals belong in an issue, not in those files.
+`cards/`, `spec/`, and `projections/` are generated from a ledger. Edit proposals belong in an issue, not in those files. [ROADMAP.md](ROADMAP.md) is maintained by hand.
 
 ## Start here
 

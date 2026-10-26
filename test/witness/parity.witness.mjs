@@ -2,7 +2,7 @@
 // (getTools, executeTool). Nothing here imports an application module.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { click, serve, launch, openSession, importTasks, exportLog, events, screen } from "./support.mjs";
+import { AGENT, click, serve, launch, openSession, importTasks, exportLog, events, screen } from "./support.mjs";
 
 let server, browser;
 before(async () => { server = await serve(); browser = await launch(); });
@@ -15,7 +15,7 @@ const tool = (page, name, input) => page.evaluate(async ([n, i]) => {
   const t = (await document.modelContext.getTools()).find((x) => x.name === n);
   if (!t) throw new Error(`no tool ${n}`);
   return JSON.parse(await document.modelContext.executeTool(t, i));
-}, [name, input ?? {}]);
+}, [name, { actor: AGENT, ...(input ?? {}) }]);
 const registry = (page) => page.evaluate(async () => (await document.modelContext.getTools()).map((t) => t.name).sort());
 const controls = (page) => page.evaluate(() => [...new Set([...document.querySelectorAll("[data-command]")].map((e) => e.dataset.command))].sort());
 
@@ -25,7 +25,11 @@ test("TANDEM-FUNC-PARITY-1: controls, tools, and the registry are one set; pomod
   const person = await controls(page);
   const agent = await registry(page);
   assert.equal(person.length, 11);
-  assert.deepEqual(person, agent);
+  assert.ok(person.includes("import_events"));
+  assert.equal(agent.includes("import_events"), false);
+  assert.equal(person.includes("wipe"), false);
+  assert.equal(agent.includes("wipe"), false);
+  assert.deepEqual(person.filter((n) => n !== "import_events"), agent);
   assert.match(await page.textContent("#status"), /11 commands declared/);
   for (const n of [...person, ...agent]) assert.doesNotMatch(n, /finish/);
   // The tool path: each registered tool carries a description and an input schema.
@@ -67,7 +71,8 @@ test("TANDEM-FUNC-PARITY-2: import 3, start, stop, complete: person and agent le
   const agentScreen = await screen(a.page);
 
   // The tool result and the exported file agree, and the screen shows what the tools did.
-  assert.equal(agentLog, await exportLog(a.page));
+  const downloaded = await exportLog(a.page);
+  assert.equal(downloaded.split("\n").slice(1).join("\n"), agentLog);
   assert.deepEqual(agentScreen, { ...personScreen, tasks: agentScreen.tasks, result: agentScreen.result });
   assert.deepEqual(agentScreen.tasks.map((t) => [t.id, t.status]), personScreen.tasks.map((t) => [t.id, t.status]));
   assert.deepEqual(agentScreen.tasks.map((t) => t.status), ["completed", "open", "open"]);
@@ -76,8 +81,8 @@ test("TANDEM-FUNC-PARITY-2: import 3, start, stop, complete: person and agent le
   assert.deepEqual(mask(agentLog), mask(personLog));
   assert.equal(events(personLog).length, 6);
   // The only difference is who acted.
-  assert.deepEqual([...new Set(events(personLog).map((e) => e.actor))], ["human:local"]);
-  assert.deepEqual([...new Set(events(agentLog).map((e) => e.actor))], ["agent:local"]);
+  assert.deepEqual([...new Set(events(personLog).map((e) => JSON.stringify(e.actor)))], [JSON.stringify({ kind: "human", name: "You" })]);
+  assert.deepEqual([...new Set(events(agentLog).map((e) => JSON.stringify(e.actor)))], [JSON.stringify({ kind: "agent", name: "Agent" })]);
   assert.equal((await tool(a.page, "list_tasks", { status: "open" })).tasks.length, 2);
   await p.context.close(); await a.context.close();
 });

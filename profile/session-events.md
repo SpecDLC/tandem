@@ -38,7 +38,7 @@ Action in past tense.
 
 A paused pomodoro does not finish and does not enter the break. Close uses `stop_pomodoro` and `pomodoro_stopped`. It clears a running pomodoro or an in-window paused one. There is no separate close event.
 
-The board is a fold of the log. It takes `now`, `pausedRollOffMs`, and `includeStale`, and it does not read the clock. Rolling a paused session off the board writes no event. The default window is 3 days. A paused session whose age is greater than or equal to the window is absent when `includeStale` is false, and still listed when `includeStale` is true. `get_status` uses that default window and `includeStale: false`. A stale paused session can be resumed when nothing is running and nothing in-window is paused.
+The board is a fold of the log. The fold copies the log into recorded-time then id order. It does not follow append order. A later add or import of the same task id replaces the earlier task. The stored log stays in append order. It takes `now`, `pausedRollOffMs`, and `includeStale`, and it does not read the clock. Rolling a paused session off the board writes no event. The default window is 3 days. A paused session whose age is greater than or equal to the window is absent when `includeStale` is false, and still listed when `includeStale` is true. `get_status` uses that default window and `includeStale: false`. A stale paused session can be resumed when nothing is running and nothing in-window is paused.
 
 ## Cursor
 

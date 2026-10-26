@@ -50,11 +50,13 @@ test("TANDEM-FUNC-IMPORT-2: a wrong or missing schema returns unsupported_schema
     assert.equal(s.tasks.length, 1);
     assert.equal(await exportLog(page), before);
   }
-  // A fresh session: the same rejection and an empty log.
+  // A fresh session: the same rejection, and the file is a header with no events.
   const fresh = await openSession(browser, server.url);
   await importTasks(fresh.page, { schema: "wrong", tasks: [{ title: "z" }] });
   assert.equal((await screen(fresh.page)).rejection, "unsupported_schema");
-  assert.equal(await exportLog(fresh.page), "");
+  const empty = await exportLog(fresh.page);
+  assert.equal(events(empty).length, 0);
+  assert.deepEqual(JSON.parse(empty.split("\n")[0]), { format: "tandem.session-log", version: 1 });
   await fresh.context.close();
   await context.close();
 });
