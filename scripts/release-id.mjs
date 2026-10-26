@@ -3,11 +3,14 @@
 // A release commit subject is "Release rel-YYYYMMDD-xxxxxxxx".
 // A restore commit subject is "Restore rel-YYYYMMDD-xxxxxxxx". Its tree matches
 // that release except for the rollback tooling paths listed below.
-// Any other commit uses the newest release commit whose tree matches.
+// Any other commit uses the newest release commit whose tree matches. If none
+// matches exactly, it uses the newest earlier release commit whose diff to it
+// touches only the tooling paths, the same rule as a restore commit. This
+// covers the merge commit of a release PR when main also carries tooling.
 //
 // usage:
 //   node scripts/release-id.mjs [--repo DIR] [--commit SHA] [--write FILE]
-// Exit 0 and print the id. Exit 3 when the tree matches no release. Exit 2 on usage.
+// Exit 0 and print the id. Exit 3 when no release matches. Exit 2 on usage.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -75,7 +78,13 @@ export function releaseForCommit(repo, sha) {
   const match = RELEASE_SUBJECT.exec(subject);
   if (match) return { sha, release_id: match[1], tree };
   const found = releaseForTree(repo, tree, sha);
-  return found ? { sha: found.sha, release_id: found.release_id, tree } : null;
+  if (found) return { sha: found.sha, release_id: found.release_id, tree };
+  for (const release of listReleaseCommits(repo, sha)) {
+    if (changedPaths(repo, release.sha, sha).every((path) => TOOLING_PATHS.includes(path))) {
+      return { sha: release.sha, release_id: release.release_id, tree: git(repo, ["rev-parse", `${release.sha}^{tree}`]) };
+    }
+  }
+  return null;
 }
 
 function die(code, msg) {

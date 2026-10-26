@@ -257,3 +257,30 @@ test("revert last on 6cb4c57 keeps the new deploy workflow", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a merge that adds only tooling keeps the release id and other edits do not", () => {
+  const { dir, latest } = releaseRepo();
+  try {
+    g(dir, ["checkout", "-q", "-b", "tooling", latest]);
+    mkdirSync(join(dir, "scripts"), { recursive: true });
+    writeFileSync(join(dir, "scripts", "live-version.mjs"), "// tooling\n");
+    g(dir, ["add", "scripts/live-version.mjs"]);
+    g(dir, ["commit", "-m", "add tooling"]);
+    g(dir, ["checkout", "-q", "main"]);
+    g(dir, ["merge", "--no-ff", "--no-edit", "tooling"]);
+    const merge = g(dir, ["rev-parse", "HEAD"]);
+    assert.equal(runNode("release-id.mjs", ["--repo", dir, "--commit", merge]).trim(), NEW);
+
+    writeFileSync(join(dir, "note.txt"), "edited\n");
+    g(dir, ["commit", "-am", "edit the app"]);
+    let code = 0;
+    try {
+      runNode("release-id.mjs", ["--repo", dir, "--commit", "HEAD"]);
+    } catch (error) {
+      code = error.status;
+    }
+    assert.equal(code, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
