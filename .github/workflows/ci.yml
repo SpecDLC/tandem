@@ -5,6 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -18,3 +20,5 @@ jobs:
           node scripts/sync-jsonl.mjs "$RUNNER_TEMP/e.jsonl" < r.json
           node scripts/sync-jsonl.mjs "$RUNNER_TEMP/e.jsonl" < r.json | grep -q 'appended 0, skipped 2'
           rm r.json
+      - name: Rollback stays manual and names the restored release
+        run: node --test test/rollback.test.mjs

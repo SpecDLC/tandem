@@ -1,0 +1,214 @@
+# Manual rollback of the public site.
+# Starts only from workflow_dispatch. It does not run on push, pull_request, or a schedule.
+# dry_run defaults to true: plan the release id and do not revert, push, or deploy.
+# A real run is dry_run false. revert-last pushes a revert to main, and deploy.yml ships it.
+# redeploy-sha deploys that earlier commit and does not move main.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "revert-last restores the previous release. redeploy-sha deploys an earlier commit."
+        type: choice
+        options:
+          - revert-last
+          - redeploy-sha
+        required: true
+      sha:
+        description: "Commit sha for redeploy-sha. Ignored for revert-last."
+        type: string
+        default: ""
+      dry_run:
+        description: "Plan only. Do not revert, push, or deploy."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rollback-production
+  cancel-in-progress: false
+
+env:
+  WRANGLER: wrangler@4.151.2
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      expected_release_id: ${{ steps.out.outputs.expected_release_id }}
+      base_sha: ${{ steps.out.outputs.base_sha }}
+      target_sha: ${{ steps.out.outputs.target_sha }}
+      revert_sha: ${{ steps.out.outputs.revert_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - id: out
+        name: Plan against main
+        env:
+          ACTION: ${{ inputs.action }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            revert-last|redeploy-sha) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          git fetch origin main
+          base="$(git rev-parse origin/main)"
+          repo="$RUNNER_TEMP/main"
+          git worktree add --detach "$repo" "$base"
+          args=(--repo "$repo" --mode "$ACTION")
+          if [ "$ACTION" = "redeploy-sha" ]; then
+            printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{7,40}$'
+            args+=(--sha "$SHA")
+          fi
+          node scripts/rollback-plan.mjs "${args[@]}" > "$RUNNER_TEMP/plan.json"
+          id="$(jq -r .expected_release_id "$RUNNER_TEMP/plan.json")"
+          target="$(jq -r .target_sha "$RUNNER_TEMP/plan.json")"
+          revert="$(jq -r .revert_sha "$RUNNER_TEMP/plan.json")"
+          printf '%s' "$id" | grep -Eq '^rel-[0-9]{8}-[0-9a-f]{8}$'
+          printf '%s' "$base" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$target" | grep -Eq '^[0-9a-f]{40}$'
+          if [ -n "$revert" ]; then printf '%s' "$revert" | grep -Eq '^[0-9a-f]{40}$'; fi
+          echo "expected_release_id=$id" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$target" >> "$GITHUB_OUTPUT"
+          echo "revert_sha=$revert" >> "$GITHUB_OUTPUT"
+          echo "Planned ${ACTION} for ${id} at ${target}"
+          node scripts/live-version.mjs --expect "$id" --dry-run
+
+  apply-revert:
+    needs: plan
+    if: ${{ inputs.dry_run == false && inputs.action == 'revert-last' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment: production
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Revert the last release on main
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED" | grep -Eq '^rel-[0-9]{8}-[0-9a-f]{8}$'
+          git fetch origin main
+          tip="$(git rev-parse origin/main)"
+          if [ "$tip" != "$BASE_SHA" ]; then
+            echo "Refusing rollback. main moved from ${BASE_SHA} to ${tip}."
+            exit 1
+          fi
+          repo="$RUNNER_TEMP/main"
+          git worktree add --detach "$repo" "$tip"
+          node scripts/rollback-plan.mjs --repo "$repo" --mode revert-last --apply > "$RUNNER_TEMP/applied.json"
+          id="$(jq -r .expected_release_id "$RUNNER_TEMP/applied.json")"
+          if [ "$id" != "$EXPECTED" ]; then
+            echo "Refusing rollback. Expected ${EXPECTED} but the revert restores ${id}."
+            exit 1
+          fi
+          git -C "$repo" push origin HEAD:main
+          echo "sha=$(jq -r .result_sha "$RUNNER_TEMP/applied.json")" >> "$GITHUB_ENV"
+      - name: Wait until deploy.yml ships the revert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 40 * 60))
+          missing_deadline=$((SECONDS + 5 * 60))
+          while true; do
+            json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?head_sha=${sha}&per_page=5")"
+            status="$(printf '%s' "$json" | jq -r '.workflow_runs[0].status // "missing"')"
+            conclusion="$(printf '%s' "$json" | jq -r '.workflow_runs[0].conclusion // "none"')"
+            url="$(printf '%s' "$json" | jq -r '.workflow_runs[0].html_url // ""')"
+            echo "deploy for ${sha}: status=${status} conclusion=${conclusion} ${url}"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" != "success" ]; then
+                echo "Rollback pushed, but deploy.yml concluded ${conclusion}."
+                exit 1
+              fi
+              break
+            fi
+            if [ "$status" = "missing" ] && [ "$SECONDS" -ge "$missing_deadline" ]; then
+              echo "Rollback pushed, but deploy.yml did not start for ${sha}."
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Rollback pushed, but deploy.yml did not finish for ${sha}."
+              exit 1
+            fi
+            sleep 15
+          done
+      - name: Live version check
+        env:
+          EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
+        run: node scripts/live-version.mjs --expect "$EXPECTED" --attempts 12 --interval 10
+
+  apply-redeploy:
+    needs: plan
+    if: ${{ inputs.dry_run == false && inputs.action == 'redeploy-sha' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Check out the earlier commit
+        env:
+          TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$BASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          git fetch origin main
+          tip="$(git rev-parse origin/main)"
+          if [ "$tip" != "$BASE_SHA" ]; then
+            echo "Refusing redeploy. main moved from ${BASE_SHA} to ${tip}."
+            exit 1
+          fi
+          git checkout --detach "$TARGET_SHA"
+      - name: Build the site
+        run: npm ci && npm run build
+      - name: Record the release id on the built site
+        env:
+          TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
+          EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
+        run: |
+          set -euo pipefail
+          id="$(node scripts/release-id.mjs --repo . --commit "$TARGET_SHA" --write dist/release.json)"
+          if [ "$id" != "$EXPECTED" ]; then
+            echo "Refusing redeploy. Expected ${EXPECTED} but this commit is ${id}."
+            exit 1
+          fi
+      - name: Deploy this commit
+        run: npx --yes "$WRANGLER" deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Live version check
+        env:
+          EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
+        run: node scripts/live-version.mjs --expect "$EXPECTED" --attempts 12 --interval 10
