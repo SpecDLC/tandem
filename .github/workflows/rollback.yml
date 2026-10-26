@@ -1,7 +1,8 @@
 # Manual rollback of the public site.
 # Starts only from workflow_dispatch. It does not run on push, pull_request, or a schedule.
 # dry_run defaults to true: plan the release id and do not revert, push, or deploy.
-# A real run is dry_run false. revert-last pushes a revert to main, and deploy.yml ships it.
+# A real run is dry_run false. revert-last pushes a Restore commit to main with the
+# Release Bot app token, so ci and deploy start. The workflow token does not push.
 # redeploy-sha builds that earlier commit in a side checkout. The release scripts
 # stay in this workflow checkout, then the job writes dist/release.json and deploys.
 # It does not move main.
@@ -94,23 +95,36 @@ jobs:
     timeout-minutes: 50
     environment: production
     permissions:
-      contents: write
+      contents: read
       actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
-      - name: Revert the last release on main
+      - name: Mint a token that starts push workflows
+        id: app
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: SpecDLC
+          repositories: tandem
+      - name: Restore the previous release on main
         env:
           BASE_SHA: ${{ needs.plan.outputs.base_sha }}
           EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           printf '%s' "$BASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$EXPECTED" | grep -Eq '^rel-[0-9]{8}-[0-9a-f]{8}$'
+          if [ -z "$APP_TOKEN" ]; then
+            echo "Refusing rollback. The Release Bot token is missing, so nothing was pushed."
+            exit 1
+          fi
           git fetch origin main
           tip="$(git rev-parse origin/main)"
           if [ "$tip" != "$BASE_SHA" ]; then
@@ -122,10 +136,12 @@ jobs:
           node scripts/rollback-plan.mjs --repo "$repo" --mode revert-last --apply > "$RUNNER_TEMP/applied.json"
           id="$(jq -r .expected_release_id "$RUNNER_TEMP/applied.json")"
           if [ "$id" != "$EXPECTED" ]; then
-            echo "Refusing rollback. Expected ${EXPECTED} but the revert restores ${id}."
+            echo "Refusing rollback. Expected ${EXPECTED} but the restore names ${id}."
             exit 1
           fi
-          git -C "$repo" push origin HEAD:main
+          # The workflow token does not start push workflows. This app token does,
+          # so ci.yml and deploy.yml run for the commit that lands on main.
+          git -C "$repo" -c "http.extraheader=AUTHORIZATION: bearer ${APP_TOKEN}" push origin HEAD:main
           echo "sha=$(jq -r .result_sha "$RUNNER_TEMP/applied.json")" >> "$GITHUB_ENV"
       - name: Wait until deploy.yml ships the revert
         env:

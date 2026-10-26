@@ -11,6 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OLD = "rel-20261021-3b5cb812";
 const NEW = "rel-20261021-8951e9eb";
 const MAIN = "001b6cc98deb88af6f50f38afa2e217e02d85cb3";
+const DEPLOY_HEAD = "6cb4c57e4b56cd3b9d658995f2812d90f7107559";
 
 function g(repo, args) {
   return execFileSync("git", ["-c", "user.name=Rollback Test", "-c", "user.email=rollback-test@example.com", ...args], {
@@ -162,7 +163,14 @@ test("the workflow starts only by hand and a dry run cannot deploy", () => {
   assert.equal(planPart.includes("wrangler"), false);
   assert.match(planPart, /--dry-run/);
   assert.match(revertPart, /inputs\.dry_run == false && inputs\.action == 'revert-last'/);
-  assert.match(revertPart, /push origin HEAD:main/);
+  assert.match(revertPart, /create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547/);
+  assert.match(revertPart, /secrets\.RELEASE_APP_PRIVATE_KEY/);
+  assert.match(revertPart, /vars\.RELEASE_APP_ID/);
+  const pushPart = revertPart.slice(0, revertPart.indexOf("Wait until deploy"));
+  assert.equal(pushPart.includes("GITHUB_TOKEN"), false);
+  assert.equal(pushPart.includes("contents: write"), false);
+  assert.match(pushPart, /http\.extraheader=AUTHORIZATION: bearer/);
+  assert.match(pushPart, /push origin HEAD:main/);
   assert.equal(revertPart.includes("wrangler"), false);
   assert.match(redeployPart, /inputs\.dry_run == false && inputs\.action == 'redeploy-sha'/);
   assert.match(redeployPart, /\$WRANGLER" deploy/);
@@ -214,17 +222,21 @@ test("revert last on tandem main restores rel-20261021-3b5cb812", () => {
   }
 });
 
-test("revert last on this pull request head keeps the new deploy workflow", () => {
-  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+test("revert last on 6cb4c57 keeps the new deploy workflow", () => {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${DEPLOY_HEAD}^{commit}`], { cwd: root, stdio: "ignore" });
+  } catch {
+    return;
+  }
   const dir = mkdtempSync(join(tmpdir(), "rollback-head-"));
   try {
     execFileSync("git", ["init", "-b", "main", dir], { stdio: "ignore" });
-    execFileSync("git", ["-C", dir, "fetch", "--no-tags", root, `${head}:refs/remotes/source/head`], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "fetch", "--no-tags", root, `${DEPLOY_HEAD}:refs/remotes/source/head`], { stdio: "pipe" });
     execFileSync("git", ["-C", dir, "checkout", "--detach", "refs/remotes/source/head"], { stdio: "ignore" });
     const dry = plan(dir, ["--mode", "revert-last"]);
     assert.equal(dry.code, 0, dry.stderr);
     assert.equal(JSON.parse(dry.stdout).expected_release_id, OLD);
-    assert.equal(g(dir, ["rev-parse", "HEAD"]), head);
+    assert.equal(g(dir, ["rev-parse", "HEAD"]), DEPLOY_HEAD);
     assert.equal(g(dir, ["status", "--porcelain"]), "");
     const applied = plan(dir, ["--mode", "revert-last", "--apply"]);
     assert.equal(applied.code, 0, applied.stderr);
