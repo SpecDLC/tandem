@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TOOLING_PATHS } from "../scripts/release-id.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OLD = "rel-20261021-3b5cb812";
@@ -115,19 +116,31 @@ test("a given sha resolves that release id and a non-ancestor is refused", () =>
   }
 });
 
-test("a conflicting revert commits nothing", () => {
+test("revert last keeps tooling and replaces a later edit of the release", () => {
   const { dir } = releaseRepo();
   try {
-    const before = g(dir, ["rev-parse", "HEAD"]);
+    mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+    writeFileSync(join(dir, ".github/workflows/deploy.yml"), "scripts/live-version.mjs\n");
     writeFileSync(join(dir, "note.txt"), "later\n");
-    g(dir, ["commit", "-am", "later edit"]);
-    const moved = g(dir, ["rev-parse", "HEAD"]);
-    const refused = plan(dir, ["--mode", "revert-last", "--apply"]);
-    assert.equal(refused.code, 1);
-    assert.match(refused.stderr, /revert conflict/);
-    assert.equal(g(dir, ["rev-parse", "HEAD"]), moved);
-    assert.notEqual(moved, before);
-    assert.equal(g(dir, ["status", "--porcelain"]), "");
+    g(dir, ["add", "-A"]);
+    g(dir, ["commit", "-m", "later edit"]);
+    const applied = plan(dir, ["--mode", "revert-last", "--apply"]);
+    assert.equal(applied.code, 0, applied.stderr);
+    const body = JSON.parse(applied.stdout);
+    assert.equal(body.expected_release_id, OLD);
+    assert.equal(readFileSync(join(dir, "note.txt"), "utf8"), "old\n");
+    assert.equal(readFileSync(join(dir, ".github/workflows/deploy.yml"), "utf8"), "scripts/live-version.mjs\n");
+    assert.equal(g(dir, ["log", "-1", "--format=%s"]), `Restore ${OLD}`);
+    assert.equal(runNode("release-id.mjs", ["--repo", dir]).trim(), OLD);
+    writeFileSync(join(dir, "note.txt"), "tamper\n");
+    g(dir, ["commit", "-am", `Restore ${OLD}`]);
+    let code = 0;
+    try {
+      runNode("release-id.mjs", ["--repo", dir]);
+    } catch (error) {
+      code = error.status ?? 1;
+    }
+    assert.equal(code, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -153,6 +166,10 @@ test("the workflow starts only by hand and a dry run cannot deploy", () => {
   assert.equal(revertPart.includes("wrangler"), false);
   assert.match(redeployPart, /inputs\.dry_run == false && inputs\.action == 'redeploy-sha'/);
   assert.match(redeployPart, /\$WRANGLER" deploy/);
+  assert.match(redeployPart, /git worktree add --detach/);
+  assert.equal(redeployPart.includes("git checkout --detach"), false);
+  assert.match(redeployPart, /GITHUB_WORKSPACE\/scripts\/release-id\.mjs/);
+  assert.match(redeployPart, /GITHUB_WORKSPACE\/scripts\/live-version\.mjs/);
   assert.equal(redeployPart.includes("git push"), false);
   const deploy = readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8");
   assert.match(deploy, /scripts\/live-version\.mjs/);
@@ -188,9 +205,37 @@ test("revert last on tandem main restores rel-20261021-3b5cb812", () => {
     assert.equal(applied.code, 0, applied.stderr);
     const body = JSON.parse(applied.stdout);
     assert.equal(body.expected_release_id, OLD);
-    assert.equal(g(dir, ["rev-parse", "HEAD^{tree}"]), body.expected_tree);
-    assert.match(g(dir, ["log", "-1", "--format=%s"]), /^Revert "Release rel-/);
+    assert.equal(g(dir, ["log", "-1", "--format=%s"]), `Restore ${OLD}`);
+    const names = g(dir, ["diff", "--name-only", body.target_sha, "HEAD"]).split("\n").filter(Boolean);
+    for (const name of names) assert.ok(TOOLING_PATHS.includes(name), name);
     assert.equal(runNode("release-id.mjs", ["--repo", dir]).trim(), OLD);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("revert last on this pull request head keeps the new deploy workflow", () => {
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const dir = mkdtempSync(join(tmpdir(), "rollback-head-"));
+  try {
+    execFileSync("git", ["init", "-b", "main", dir], { stdio: "ignore" });
+    execFileSync("git", ["-C", dir, "fetch", "--no-tags", root, `${head}:refs/remotes/source/head`], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "checkout", "--detach", "refs/remotes/source/head"], { stdio: "ignore" });
+    const dry = plan(dir, ["--mode", "revert-last"]);
+    assert.equal(dry.code, 0, dry.stderr);
+    assert.equal(JSON.parse(dry.stdout).expected_release_id, OLD);
+    assert.equal(g(dir, ["rev-parse", "HEAD"]), head);
+    assert.equal(g(dir, ["status", "--porcelain"]), "");
+    const applied = plan(dir, ["--mode", "revert-last", "--apply"]);
+    assert.equal(applied.code, 0, applied.stderr);
+    const body = JSON.parse(applied.stdout);
+    assert.equal(body.expected_release_id, OLD);
+    assert.match(readFileSync(join(dir, ".github/workflows/deploy.yml"), "utf8"), /scripts\/live-version\.mjs/);
+    const names = g(dir, ["diff", "--name-only", body.target_sha, "HEAD"]).split("\n").filter(Boolean);
+    assert.ok(names.includes(".github/workflows/deploy.yml"));
+    for (const name of names) assert.ok(TOOLING_PATHS.includes(name), name);
+    assert.equal(runNode("release-id.mjs", ["--repo", dir]).trim(), OLD);
+    assert.equal(g(dir, ["status", "--porcelain"]), "");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

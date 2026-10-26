@@ -2,7 +2,9 @@
 # Starts only from workflow_dispatch. It does not run on push, pull_request, or a schedule.
 # dry_run defaults to true: plan the release id and do not revert, push, or deploy.
 # A real run is dry_run false. revert-last pushes a revert to main, and deploy.yml ships it.
-# redeploy-sha deploys that earlier commit and does not move main.
+# redeploy-sha builds that earlier commit in a side checkout. The release scripts
+# stay in this workflow checkout, then the job writes dist/release.json and deploys.
+# It does not move main.
 name: Rollback
 
 on:
@@ -175,7 +177,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
-      - name: Check out the earlier commit
+      - name: Check out the earlier commit beside this workflow
         env:
           TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
           BASE_SHA: ${{ needs.plan.outputs.base_sha }}
@@ -189,26 +191,34 @@ jobs:
             echo "Refusing redeploy. main moved from ${BASE_SHA} to ${tip}."
             exit 1
           fi
-          git checkout --detach "$TARGET_SHA"
+          repo="$RUNNER_TEMP/rollback-target"
+          git worktree add --detach "$repo" "$TARGET_SHA"
+          echo "TARGET_DIR=$repo" >> "$GITHUB_ENV"
       - name: Build the site
-        run: npm ci && npm run build
+        run: |
+          set -euo pipefail
+          cd "$TARGET_DIR"
+          npm ci && npm run build
       - name: Record the release id on the built site
         env:
           TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
           EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
         run: |
           set -euo pipefail
-          id="$(node scripts/release-id.mjs --repo . --commit "$TARGET_SHA" --write dist/release.json)"
+          id="$(node "$GITHUB_WORKSPACE/scripts/release-id.mjs" --repo "$TARGET_DIR" --commit "$TARGET_SHA" --write "$TARGET_DIR/dist/release.json")"
           if [ "$id" != "$EXPECTED" ]; then
             echo "Refusing redeploy. Expected ${EXPECTED} but this commit is ${id}."
             exit 1
           fi
       - name: Deploy this commit
-        run: npx --yes "$WRANGLER" deploy
+        run: |
+          set -euo pipefail
+          cd "$TARGET_DIR"
+          npx --yes "$WRANGLER" deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Live version check
         env:
           EXPECTED: ${{ needs.plan.outputs.expected_release_id }}
-        run: node scripts/live-version.mjs --expect "$EXPECTED" --attempts 12 --interval 10
+        run: node "$GITHUB_WORKSPACE/scripts/live-version.mjs" --expect "$EXPECTED" --attempts 12 --interval 10

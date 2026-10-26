@@ -1,9 +1,9 @@
 // Resolve the release id of a commit from the git history.
 //
 // A release commit subject is "Release rel-YYYYMMDD-xxxxxxxx".
-// The id of any other commit is the newest release commit whose tree matches.
-// The id is not stored in the tree. A revert commit keeps the previous tree
-// and a new message, so the tree is the lookup key.
+// A restore commit subject is "Restore rel-YYYYMMDD-xxxxxxxx". Its tree matches
+// that release except for the rollback tooling paths listed below.
+// Any other commit uses the newest release commit whose tree matches.
 //
 // usage:
 //   node scripts/release-id.mjs [--repo DIR] [--commit SHA] [--write FILE]
@@ -15,6 +15,18 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const RELEASE_SUBJECT = /^Release (rel-\d{8}-[0-9a-f]{8})$/;
+export const RESTORE_SUBJECT = /^Restore (rel-\d{8}-[0-9a-f]{8})$/;
+// These paths may stay from the current main when a restore commit puts the
+// previous release back. The rest of the tree has to match that release.
+export const TOOLING_PATHS = [
+  ".github/workflows/ci.yml",
+  ".github/workflows/deploy.yml",
+  ".github/workflows/rollback.yml",
+  "scripts/live-version.mjs",
+  "scripts/release-id.mjs",
+  "scripts/rollback-plan.mjs",
+  "test/rollback.test.mjs",
+];
 
 export function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -40,9 +52,26 @@ export function releaseForTree(repo, tree, head = "HEAD") {
   return null;
 }
 
+export function changedPaths(repo, from, to) {
+  const raw = git(repo, ["diff", "--name-only", from, to]);
+  return raw ? raw.split("\n").filter(Boolean) : [];
+}
+
+export function restoreIsHonest(repo, sha, releaseId) {
+  const release = listReleaseCommits(repo, sha).find((commit) => commit.release_id === releaseId);
+  if (!release) return false;
+  return changedPaths(repo, release.sha, sha).every((path) => TOOLING_PATHS.includes(path));
+}
+
 export function releaseForCommit(repo, sha) {
   const subject = git(repo, ["log", "-1", "--format=%s", sha]);
   const tree = git(repo, ["rev-parse", `${sha}^{tree}`]);
+  const restore = RESTORE_SUBJECT.exec(subject);
+  if (restore) {
+    if (!restoreIsHonest(repo, sha, restore[1])) return null;
+    const release = listReleaseCommits(repo, sha).find((commit) => commit.release_id === restore[1]);
+    return { sha: release.sha, release_id: restore[1], tree: git(repo, ["rev-parse", `${release.sha}^{tree}`]) };
+  }
   const match = RELEASE_SUBJECT.exec(subject);
   if (match) return { sha, release_id: match[1], tree };
   const found = releaseForTree(repo, tree, sha);
@@ -82,7 +111,9 @@ if (isMain) {
   } catch {
     die(2, `not a commit: ${commit}`);
   }
+  const subject = git(repo, ["log", "-1", "--format=%s", full]);
   const found = releaseForCommit(repo, full);
+  if (!found && RESTORE_SUBJECT.test(subject)) die(1, `restore commit does not match that release`);
   if (!found) die(3, `no release id for ${full}`);
   if (write) {
     mkdirSync(dirname(write), { recursive: true });

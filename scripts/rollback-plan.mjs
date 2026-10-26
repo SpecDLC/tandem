@@ -3,10 +3,11 @@
 //   node scripts/rollback-plan.mjs --repo DIR --mode revert-last [--apply]
 //   node scripts/rollback-plan.mjs --repo DIR --mode redeploy-sha --sha SHA
 //
-// revert-last undoes the newest "Release rel-..." commit. The restored id is the
-// release whose tree equals that commit's parent. --apply commits the revert
-// locally when the result tree is that release. Without --apply it leaves the
-// checkout unchanged.
+// revert-last loads the previous release tree, then puts the current rollback
+// tooling back. A text revert of the release commit conflicts once this branch
+// edits deploy.yml, so this does not use git revert. --apply commits that tree
+// locally. Without --apply it leaves the checkout unchanged. The commit subject
+// is "Restore rel-...". This script never pushes.
 //
 // redeploy-sha resolves an earlier commit on this branch to its release id.
 // It does not check out or deploy. The workflow does that only when dry_run is false.
@@ -14,7 +15,7 @@
 // Prints one JSON object on stdout. Exit 0 ok, 1 refused, 2 usage.
 
 import { spawnSync } from "node:child_process";
-import { git, listReleaseCommits, releaseForCommit, releaseForTree } from "./release-id.mjs";
+import { git, listReleaseCommits, RESTORE_SUBJECT, releaseForCommit, releaseForTree, restoreIsHonest, TOOLING_PATHS } from "./release-id.mjs";
 
 const BOT = ["-c", "user.name=SpecDLC Rollback", "-c", "user.email=rollback@users.noreply.specdlc.com"];
 const BOT_ENV = {
@@ -50,11 +51,23 @@ function isAncestor(repo, ancestor, descendant) {
 function latestRelease(repo) {
   const commits = listReleaseCommits(repo, "HEAD");
   if (!commits.length) return null;
+  const subject = git(repo, ["log", "-1", "--format=%s", "HEAD"]);
+  const restore = RESTORE_SUBJECT.exec(subject);
+  if (restore && restoreIsHonest(repo, "HEAD", restore[1])) {
+    return commits.find((commit) => commit.release_id === restore[1]) ?? null;
+  }
   const headTree = git(repo, ["rev-parse", "HEAD^{tree}"]);
   const published = commits.find((commit) => git(repo, ["rev-parse", `${commit.sha}^{tree}`]) === headTree);
   if (published) return published;
   const maximal = commits.filter((commit) => !commits.some((other) => isAncestor(repo, commit.sha, other.sha)));
   return maximal.length === 1 ? maximal[0] : null;
+}
+
+function keepTooling(repo, base) {
+  for (const path of TOOLING_PATHS) {
+    if (run(repo, ["cat-file", "-e", `${base}:${path}`]).status !== 0) continue;
+    if (run(repo, ["checkout", base, "--", path]).status !== 0) die(1, `could not keep ${path}`);
+  }
 }
 
 const args = process.argv.slice(2);
@@ -132,16 +145,15 @@ if (!restored || restored.sha === latest.sha) {
 
 if (git(repo, ["status", "--porcelain"])) die(1, "checkout is dirty");
 
-const reverted = run(repo, ["revert", "--no-commit", latest.sha]);
-if (reverted.status !== 0) {
-  run(repo, ["revert", "--abort"]);
+if (run(repo, ["read-tree", "--reset", "-u", restored.sha]).status !== 0) {
   resetHard(repo, base);
-  die(1, "revert conflict; nothing was committed");
+  die(1, "could not load the previous release");
 }
-const tree = git(repo, ["write-tree"]);
-if (tree !== expectedTree) {
+keepTooling(repo, base);
+const extra = git(repo, ["diff", "--cached", "--name-only", restored.sha]).split("\n").filter(Boolean);
+if (extra.some((path) => !TOOLING_PATHS.includes(path))) {
   resetHard(repo, base);
-  die(1, "revert would not restore the previous release; nothing was committed");
+  die(1, "restore would change more than the rollback tooling");
 }
 
 const plan = {
@@ -161,11 +173,10 @@ if (!apply) {
   process.exit(0);
 }
 
-const subject = git(repo, ["log", "-1", "--format=%s", latest.sha]);
-const committed = run(repo, [...BOT, "commit", "-m", `Revert "${subject}"`, "-m", `This reverts commit ${latest.sha}.\n\nRestores ${restored.release_id}.`]);
+const committed = run(repo, [...BOT, "commit", "-m", `Restore ${restored.release_id}`, "-m", `Restores ${restored.sha}.\n\nKeeps the rollback tooling from ${base} so deploy can publish release.json.`]);
 if (committed.status !== 0) {
   resetHard(repo, base);
-  die(1, "could not commit the revert");
+  die(1, "could not commit the restore");
 }
 plan.result_sha = git(repo, ["rev-parse", "HEAD"]);
 console.log(JSON.stringify(plan) + "\n");
