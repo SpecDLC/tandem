@@ -70,7 +70,7 @@ test("resume and close declare a 44px minimum and the same now paints the same c
   const T0 = Date.parse("2026-10-14T18:00:00.000Z");
   const clock = { t: T0 };
   const session = new Session(new MemoryStore(), () => clock.t);
-  const human = bind(session, "human");
+  const human = bind(session, { kind: "human", name: "You" });
   const { task_id } = await human.add_task("Draft");
   await human.start_pomodoro(task_id);
   clock.t += 40_000;

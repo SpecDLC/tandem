@@ -17,6 +17,7 @@ const MESSAGES: Record<string, Friendly> = {
   unsupported_schema:       { title: "That file isn't a Tandem task list", body: "Task imports need \"schema\": \"tandem.tasks/v0\" and a tasks array." },
   invalid_events:           { title: "That text isn't a Tandem log", body: "Import a list of events exported from Tandem." },
   duplicate_id:             { title: "That one is already in the list", body: "The duplicate was skipped." },
+  stale_cursor:             { title: "The board changed", body: "Export the log again and retry with the new cursor." },
 };
 
 const FALLBACK: Friendly = { title: "Something didn't work", body: "Try again. If it keeps happening, open Advanced and export the log." };

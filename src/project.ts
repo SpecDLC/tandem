@@ -1,6 +1,6 @@
 // Session projection (list, status). A pure fold over the log; replaying the JSONL must reach the same state.
-import { EVENT_TYPES, type SessionEvent } from "./log.ts";
-import { BREAK_SECONDS, PAUSED_ROLL_OFF_MS, remainingSeconds } from "./timer.ts";
+import { EVENT_TYPES, inFoldOrder, type SessionEvent } from "./log.ts";
+import { BREAK_SECONDS, PAUSED_ROLL_OFF_MS, readFocusMinutes, remainingSeconds } from "./timer.ts";
 
 export interface TaskView {
   task_id: string;
@@ -23,16 +23,25 @@ export interface Board {
   task_title: string | null;
   pomodoro_id: string | null;
   remaining_seconds: number;
+  /** Planned focus length of the current focus or paused session. Null when the board is idle or on a break. */
+  focus_minutes: number | null;
   paused: PausedCard[];
 }
 export type Status = Board;
-interface Running { pomodoro_id: string; task_id: string; endsAtMs: number; actor: string }
+interface Running {
+  pomodoro_id: string;
+  task_id: string;
+  endsAtMs: number;
+  actor: SessionEvent["actor"];
+  focusMinutes: number;
+}
 interface Finished { task_id: string; atMs: number }
 interface Paused {
   pomodoro_id: string;
   task_id: string;
   remaining_seconds: number;
   pausedAtMs: number;
+  focusMinutes: number;
 }
 
 const byPausedAsc = (a: PausedCard, b: PausedCard) =>
@@ -49,7 +58,7 @@ export class Projection {
     switch (e.type) {
       case EVENT_TYPES.taskImported:
       case EVENT_TYPES.taskAdded: {
-        if (this.tasks.has(d.task_id)) break;
+        // Applied in recorded-time order, so this later event replaces an earlier edit of the same task.
         const t: TaskView = { task_id: d.task_id, title: d.title, status: "open" };
         if (d.estimate_pomodoros !== undefined) t.estimate_pomodoros = d.estimate_pomodoros;
         if (d.notes !== undefined) t.notes = d.notes;
@@ -62,7 +71,10 @@ export class Projection {
         break;
       }
       case EVENT_TYPES.pomodoroStarted:
-        this.running = { pomodoro_id: d.pomodoro_id, task_id: d.task_id, endsAtMs: Date.parse(d.ends_at), actor: e.actor };
+        this.running = {
+          pomodoro_id: d.pomodoro_id, task_id: d.task_id, endsAtMs: Date.parse(d.ends_at),
+          actor: e.actor, focusMinutes: readFocusMinutes(d),
+        };
         this.finished = null;
         break;
       case EVENT_TYPES.pomodoroPaused: {
@@ -76,6 +88,7 @@ export class Projection {
           task_id,
           remaining_seconds: typeof d.remaining_seconds === "number" ? d.remaining_seconds : 0,
           pausedAtMs: Date.parse(e.time),
+          focusMinutes: running.focusMinutes,
         });
         break;
       }
@@ -83,7 +96,10 @@ export class Projection {
         const held = this.paused.find((p) => p.pomodoro_id === d.pomodoro_id);
         if (!held) break;
         this.paused = this.paused.filter((p) => p.pomodoro_id !== d.pomodoro_id);
-        this.running = { pomodoro_id: held.pomodoro_id, task_id: held.task_id, endsAtMs: Date.parse(d.ends_at), actor: e.actor };
+        this.running = {
+          pomodoro_id: held.pomodoro_id, task_id: held.task_id, endsAtMs: Date.parse(d.ends_at),
+          actor: e.actor, focusMinutes: held.focusMinutes,
+        };
         this.finished = null;
         break;
       }
@@ -122,12 +138,12 @@ export class Projection {
   board(nowMs: number, pausedRollOffMs: number, includeStale: boolean): Board {
     const cards = this.paused.map((p) => this.card(p, nowMs)).sort(byPausedAsc);
     const visible = includeStale ? cards : cards.filter((c) => c.age_ms < pausedRollOffMs);
-    const empty = { task_id: null, task_title: null, pomodoro_id: null, remaining_seconds: 0, paused: visible };
+    const empty = { task_id: null, task_title: null, pomodoro_id: null, remaining_seconds: 0, focus_minutes: null, paused: visible };
     if (this.running) {
       return {
         phase: "focus", task_id: this.running.task_id, task_title: this.tasks.get(this.running.task_id)?.title ?? null,
         pomodoro_id: this.running.pomodoro_id, remaining_seconds: remainingSeconds(this.running.endsAtMs, nowMs),
-        paused: visible,
+        focus_minutes: this.running.focusMinutes, paused: visible,
       };
     }
     if (this.finished) {
@@ -135,7 +151,7 @@ export class Projection {
       if (left > 0) {
         return {
           phase: "break", task_id: this.finished.task_id, task_title: this.tasks.get(this.finished.task_id)?.title ?? null,
-          pomodoro_id: null, remaining_seconds: left, paused: visible,
+          pomodoro_id: null, remaining_seconds: left, focus_minutes: null, paused: visible,
         };
       }
     }
@@ -144,7 +160,8 @@ export class Projection {
       const card = this.card(current, nowMs);
       return {
         phase: "paused", task_id: card.task_id, task_title: card.task_title,
-        pomodoro_id: card.pomodoro_id, remaining_seconds: card.remaining_seconds, paused: visible,
+        pomodoro_id: card.pomodoro_id, remaining_seconds: card.remaining_seconds,
+        focus_minutes: current.focusMinutes, paused: visible,
       };
     }
     return { phase: "idle", ...empty };
@@ -167,9 +184,10 @@ export class Projection {
   }
 }
 
+/** Pure fold. Applies a copy in recorded-time order, then id. Does not reorder the stored log. */
 export function project(events: readonly SessionEvent[]): Projection {
   const p = new Projection();
-  for (const e of events) p.apply(e);
+  for (const e of inFoldOrder(events)) p.apply(e);
   return p;
 }
 

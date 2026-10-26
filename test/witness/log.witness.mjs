@@ -36,14 +36,19 @@ test("TANDEM-TECH-LOG-1: export, discard the working copy, import the export: li
   await click(b.page, "[data-command='import_events']");
   const listAfter = await screen(b.page);
   assert.match(listAfter.result, /imported 6, rejected 0, skipped 0/);
+  assert.match(listAfter.result, /Imported 6 events\./);
   assert.deepEqual(listAfter.tasks, listBefore.tasks);
   assert.deepEqual(listAfter.status, listBefore.status);
-  assert.equal(await exportLog(b.page), exported, "ids and bytes are kept");
+  const afterLog = await exportLog(b.page);
+  assert.equal(afterLog, exported, "imported events keep their bytes and add no event");
+  assert.equal(events(afterLog).some((e) => String(e.type).endsWith("log_imported.v1")), false);
 
   // Importing the same events again adds nothing.
   await click(b.page, "[data-command='import_events']");
-  assert.match((await screen(b.page)).result, /imported 0, rejected 0, skipped 6/);
-  assert.equal(await exportLog(b.page), exported);
+  const second = await screen(b.page);
+  assert.match(second.result, /imported 0, rejected 0, skipped 6/);
+  assert.match(second.result, /Imported 0 events\./);
+  assert.equal(await exportLog(b.page), afterLog);
   await a.context.close();
   await b.context.close();
 });

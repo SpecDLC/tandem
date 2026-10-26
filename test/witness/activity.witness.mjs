@@ -1,7 +1,7 @@
 // Activity strip and agent attribution. The page is the only interface: controls, tools, and the exported log.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { click, serve, launch, openSession, exportLog, events, screen } from "./support.mjs";
+import { AGENT, click, serve, launch, openSession, exportLog, events, screen } from "./support.mjs";
 
 let server, browser;
 before(async () => { server = await serve(); browser = await launch(); });
@@ -11,7 +11,7 @@ const tool = (page, name, input) => page.evaluate(async ([n, i]) => {
   const t = (await document.modelContext.getTools()).find((x) => x.name === n);
   if (!t) throw new Error(`no tool ${n}`);
   return JSON.parse(await document.modelContext.executeTool(t, i));
-}, [name, input ?? {}]);
+}, [name, { actor: AGENT, ...(input ?? {}) }]);
 
 const presenceOf = (page) => page.locator(".presence").evaluate((el) => ({
   state: el.getAttribute("data-state"),
@@ -97,9 +97,9 @@ test("agent tools mark the changed element and the masthead; a human action mark
   const board = await screen(page);
   const log = await exportLog(page);
   const evs = events(log);
-  assert.ok(evs.some((e) => e.actor === "human:local"));
-  assert.ok(evs.some((e) => e.actor === "agent:local"));
-  assert.ok(evs.every((e) => e.actor === "human:local" || e.actor === "agent:local"));
+  assert.ok(evs.some((e) => e.actor?.kind === "human" && e.actor?.name === "You"));
+  assert.ok(evs.some((e) => e.actor?.kind === "agent" && e.actor?.name === "Agent"));
+  assert.ok(evs.every((e) => (e.actor?.name === "You" && e.actor?.kind === "human") || (e.actor?.name === "Agent" && e.actor?.kind === "agent")));
   assert.ok(!log.includes('"actor":"Agent"') && !log.includes('"actor":"You"'));
 
   const replay = await openSession(browser, server.url);
@@ -110,7 +110,10 @@ test("agent tools mark the changed element and the masthead; a human action mark
   assert.deepEqual((await screen(replay.page)).status, board.status);
   assert.equal(await replay.page.locator("[data-touched='agent']").count(), 0);
   assert.equal((await replay.page.locator("[data-field='actor']").textContent())?.trim(), "Agent");
-  assert.equal(await exportLog(replay.page), log);
+  assert.match((await screen(replay.page)).result, /Imported \d+ events\./);
+  const replayed = await exportLog(replay.page);
+  assert.equal(replayed, log);
+  assert.equal(events(replayed).some((e) => String(e.type).endsWith("log_imported.v1")), false);
   assert.equal(a2.ok && a3.ok, true);
   await context.close();
   await replay.context.close();

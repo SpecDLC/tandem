@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { serve, launch, openSession, screen, events } from "./support.mjs";
+import { AGENT, serve, launch, openSession, screen, events, click } from "./support.mjs";
 
 // The public tree, cloned next to this repo in CI or given by TANDEM_PUBLIC. The sync script is read from there.
 const PUBLIC = process.env.TANDEM_PUBLIC ?? new URL("../../../tandem/", import.meta.url).pathname;
@@ -17,11 +17,17 @@ let server, browser;
 before(async () => { server = await serve(); browser = await launch(); });
 after(async () => { await browser.close(); server.close(); });
 
+const importLog = async (page, list) => {
+  await page.fill("#events-input", list.map((e) => JSON.stringify(e)).join("\n"));
+  await click(page, "[data-command='import_events']");
+  return screen(page);
+};
+
 const tool = (page, name, input) => page.evaluate(async ([n, i]) => {
   const t = (await document.modelContext.getTools()).find((x) => x.name === n);
   if (!t) throw new Error(`no tool ${n}`);
   return JSON.parse(await document.modelContext.executeTool(t, i));
-}, [name, input ?? {}]);
+}, [name, { actor: AGENT, ...(input ?? {}) }]);
 
 const sync = (file, result) => {
   const r = spawnSync("node", [SYNC, file], { input: JSON.stringify(result), encoding: "utf8" });
@@ -93,8 +99,8 @@ test("TANDEM-TECH-LOG-3: sync from an empty cursor replays to the session; a sec
 
   // The file replays to the same list and status the session shows.
   const fresh = await openSession(browser, server.url);
-  const imp = await tool(fresh.page, "import_events", { events: lines(file).map((l) => JSON.parse(l)) });
-  assert.equal(imp.ok, true);
+  const imp = await importLog(fresh.page, lines(file).map((l) => JSON.parse(l)));
+  assert.match(imp.result, /imported 4, rejected 0, skipped 0/);
   const a = await screen(page), b = await screen(fresh.page);
   assert.deepEqual(b.tasks, a.tasks);
   assert.deepEqual(b.status, a.status);
@@ -111,9 +117,12 @@ test("TANDEM-TECH-LOG-3: sync from an empty cursor replays to the session; a sec
   const early = { specversion: "1.0", id: "00000000000000000000000001", source: "urn:specdlc:tandem", type: "com.specdlc.tandem.task_added.v1",
     subject: "tearly", time: "2026-10-14T11:00:00.000Z", datacontenttype: "application/json", dataschema: "urn:specdlc:schema:tandem.session:1",
     actor: "human:local", data: { task_id: "tearly", title: "Earlier id, later arrival" } };
-  assert.equal((await tool(page, "import_events", { events: [early] })).ok, true);
+  const earlyNote = await importLog(page, [early]);
+  assert.match(earlyNote.result, /imported 1, rejected 0, skipped 0/);
+  assert.match(earlyNote.result, /Imported 1 event\./);
   const third = await tool(page, "export_events", { since_cursor: first.cursor });
   assert.deepEqual(third.events.map((e) => e.id), [early.id], "found by position, not id magnitude");
+  assert.equal(third.events[0].actor, "human:local");
   assert.equal(third.cursor, early.id);
   assert.match(sync(file, third).out, /appended 1, skipped 0/);
   assert.equal(lines(file).length, 5);
@@ -156,8 +165,8 @@ test("TANDEM-FUNC-COACH-1: the scripted tool sequence writes import, start, and 
   const log = (await tool(page, "export_events")).events;
   assert.deepEqual(log.filter((e) => !e.type.endsWith("task_imported.v1")).map((e) => e.type.replace("com.specdlc.tandem.", "")), ["pomodoro_started.v1", "pomodoro_finished.v1"]);
   assert.equal(log.filter((e) => e.type.endsWith("task_imported.v1")).length, 3);
-  assert.deepEqual([...new Set(log.map((e) => e.actor))], ["agent:local"]);
-  assert.equal(log.some((e) => e.actor.startsWith("human")), false);
+  assert.deepEqual([...new Set(log.map((e) => JSON.stringify(e.actor)))], [JSON.stringify(AGENT)]);
+  assert.equal(log.some((e) => e.actor?.kind === "human"), false);
   assert.deepEqual([...new Set(called)].sort(), ["get_status", "import_tasks", "list_tasks", "start_pomodoro"]);
   await context.close();
 });

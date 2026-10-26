@@ -5,6 +5,8 @@ import { Session, bind } from "../src/registry.ts";
 import { MemoryStore } from "../src/log.ts";
 
 const T0 = Date.parse("2026-10-14T18:00:00.000Z");
+const HUMAN = { kind: "human", name: "Patrick" };
+const AGENT = { kind: "agent", name: "Texian" };
 
 test("relative phrases stay on the minute", () => {
   const at = "2026-10-14T18:00:00.000Z";
@@ -16,7 +18,7 @@ test("relative phrases stay on the minute", () => {
 
 test("the activity projection folds forward and shows the newest four", async () => {
   const s = new Session(new MemoryStore(), () => T0);
-  const human = bind(s, "human");
+  const human = bind(s, HUMAN);
   const seen = [];
   for (const title of ["a", "b", "c", "d", "e"]) {
     await human.add_task(title);
@@ -25,44 +27,44 @@ test("the activity projection folds forward and shows the newest four", async ()
   assert.deepEqual(seen, [1, 2, 3, 4, 5]);
   const window = s.activity.newest(4);
   assert.deepEqual(window.map((row) => row.text), [
-    "You added “e”",
-    "You added “d”",
-    "You added “c”",
-    "You added “b”",
+    "Patrick added “e”",
+    "Patrick added “d”",
+    "Patrick added “c”",
+    "Patrick added “b”",
   ]);
-  assert.ok(window.every((row) => row.actor === "human" && !row.text.includes(":local")));
+  assert.ok(window.every((row) => row.actor === "human" && row.name === "Patrick"));
 });
 
 test("the log keeps the stamped actor and a reload is not a fresh change", async () => {
   const store = new MemoryStore();
   const s = await Session.open(store, () => T0);
-  const human = bind(s, "human");
-  const agent = bind(s, "agent");
+  const human = bind(s, HUMAN);
+  const agent = bind(s, AGENT);
   const mine = await human.add_task("Mine");
   const theirs = await agent.add_task("Theirs");
-  assert.equal(s.activity.taskActor(mine.task_id), "human");
-  assert.equal(s.activity.taskActor(theirs.task_id), "agent");
-  assert.equal(s.activity.newest(1)[0].text, "Agent added “Theirs”");
-  assert.deepEqual(s.exportEvents().events.map((e) => e.actor), ["human:local", "agent:local"]);
+  assert.equal(s.activity.taskActor(mine.task_id).kind, "human");
+  assert.equal(s.activity.taskActor(theirs.task_id).name, "Texian");
+  assert.equal(s.activity.newest(1)[0].text, "Texian added “Theirs”");
+  assert.deepEqual(s.exportEvents().events.map((e) => e.actor), [HUMAN, AGENT]);
   const fresh = s.takeAppended();
-  assert.deepEqual(fresh.map((e) => e.actor), ["human:local", "agent:local"]);
+  assert.deepEqual(fresh.map((e) => e.actor), [HUMAN, AGENT]);
   assert.equal(s.takeAppended().length, 0);
 
   const reloaded = await Session.open(store, () => T0);
   assert.equal(reloaded.activity.length, 2);
-  assert.equal(reloaded.activity.newest(1)[0].text, "Agent added “Theirs”");
+  assert.equal(reloaded.activity.newest(1)[0].text, "Texian added “Theirs”");
   assert.equal(reloaded.takeAppended().length, 0);
-  assert.deepEqual(reloaded.exportEvents().events.map((e) => e.actor), ["human:local", "agent:local"]);
+  assert.deepEqual(reloaded.exportEvents().events.map((e) => e.actor), [HUMAN, AGENT]);
 });
 
 test("focus starter follows the latest start event", async () => {
   const s = new Session(new MemoryStore(), () => T0);
-  const agent = bind(s, "agent");
+  const agent = bind(s, AGENT);
   const { task_id } = await agent.add_task("Focus me");
   await agent.start_pomodoro(task_id);
-  assert.equal(s.activity.focusStarter(), "agent");
+  assert.equal(s.activity.focusStarter().kind, "agent");
   assert.equal(s.activity.pomodoroCount(task_id), 1);
-  assert.equal(s.activity.newest(1)[0].text, "Agent started focus on “Focus me”");
+  assert.equal(s.activity.newest(1)[0].text, "Texian started focus on “Focus me”");
   assert.equal(s.activity.newest(1)[0].focus, true);
 });
 
@@ -76,6 +78,6 @@ test("a projection built one event at a time matches a fold of the same events",
   for (const e of events) step.apply(e);
   for (const e of events) batch.apply(e);
   assert.deepEqual(step.newest(4), batch.newest(4));
-  assert.equal(step.taskActor("t"), "agent");
-  assert.equal(step.newest(1)[0].text, "Agent completed “T”");
+  assert.equal(step.taskActor("t").kind, "unknown");
+  assert.equal(step.newest(1)[0].text, "unknown actor completed “T”");
 });

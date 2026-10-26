@@ -168,11 +168,26 @@
             <div><button type="button" class="btn" data-command="import_events">Import log</button></div>
           </div>
 
+          <div class="stack" id="sync-settings">
+            <span class="label">Sync</span>
+            <p data-field="sync-origin">Not syncing</p>
+            <label class="label" for="sync-endpoint">Endpoint URL</label>
+            <input id="sync-endpoint" type="url" spellcheck="false" autocomplete="off" placeholder="https://sync.example">
+            <label class="label" for="sync-token">Token</label>
+            <input id="sync-token" type="password" spellcheck="false" autocomplete="off">
+            <div class="row-btns">
+              <button type="button" class="btn" data-action="save-sync">Save sync</button>
+              <button type="button" class="btn" data-action="sync-now">Sync now</button>
+              <button type="button" class="btn" data-action="sync-off">Turn sync off</button>
+            </div>
+            <p data-field="sync-status" data-sync-state="off"></p>
+          </div>
+
           <div class="stack">
             <span class="label">Commands declared to agents</span>
             <ul class="commands" data-field="commands">
               <li>import_tasks</li><li>add_task</li><li>complete_task</li><li>list_tasks</li><li>start_pomodoro</li>
-              <li>pause_pomodoro</li><li>resume_pomodoro</li><li>stop_pomodoro</li><li>get_status</li><li>export_events</li><li>import_events</li>
+              <li>pause_pomodoro</li><li>resume_pomodoro</li><li>stop_pomodoro</li><li>get_status</li><li>export_events</li>
             </ul>
           </div>
         </div>
@@ -222,6 +237,7 @@
       <button type="button" class="task__open" aria-haspopup="dialog" aria-label="… Show actions">
         <span class="task__title" data-field="title"></span>
         <span class="label" data-field="meta"><!-- T-01 · <span class="actor" data-actor="agent">Agent</span> · 2 pomodoros  (who added it, or who last changed it) --></span>
+        <span class="conflict" data-field="conflict" hidden></span>
       </button>
       <span class="flag" data-field="active-flag">In focus</span>
       <button type="button" class="btn task__start" data-command="start_pomodoro" data-task-id="">Start</button>

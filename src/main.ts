@@ -1,13 +1,20 @@
 import "../vendor/webmcp-polyfill/src/auto.ts";
-import { actorWord, displayNow, relativePhrase, type ActivityItem } from "./activity.ts";
-import { COMMAND_NAMES, Session, bind, type CommandName } from "./registry.ts";
+import { displayNow, readActor, relativePhrase, type ActivityItem } from "./activity.ts";
+import { COMMAND_NAMES, Session, bind, type Actor, type CommandName } from "./registry.ts";
 import { commitTitle } from "./addControl.ts";
 import { registerTools } from "./tools.ts";
-import { IdbStore, toJsonl, type SessionEvent } from "./log.ts";
+import { IdbStore, formatLogFile, parseLogFile, type SessionEvent } from "./log.ts";
+import {
+  IdbSyncSettings, applyConnectCsp, conflictLabel, endpointOrigin, mergeConflicts, findConflicts, syncSession,
+  type Conflict, type SyncReport,
+} from "./sync.ts";
 import { friendly, friendlyRow, showRejection } from "./messages.ts";
 import { cssRgb, paintPausedCard, parseCssColor, type PausedPaint, type PausedPalette, type Rgb } from "./pausedFade.ts";
 import type { PausedCard, Status, TaskView } from "./project.ts";
-import { FOCUS_SECONDS, BREAK_SECONDS, PAUSED_ROLL_OFF_MS } from "./timer.ts";
+import { BREAK_SECONDS, DEFAULT_FOCUS_MINUTES, PAUSED_ROLL_OFF_MS } from "./timer.ts";
+
+/** The person at the keyboard. A tool call passes its own actor instead. */
+const PAGE_ACTOR: Actor = { kind: "human", name: "You" };
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 const el = (tag: string, props: Record<string, unknown> = {}, data: Record<string, string> = {}): HTMLElement => {
@@ -126,8 +133,25 @@ async function start(): Promise<void> {
     status.textContent = "WebMCP is unavailable in this browser context.";
     return;
   }
-  const session = await Session.open(new IdbStore(), () => Date.now());
-  const cmd = bind(session, "human");
+  const store = new IdbStore();
+  const syncSettings = new IdbSyncSettings();
+  const savedSync = await syncSettings.load();
+  applyConnectCsp(savedSync?.endpoint ?? "");
+  let storedConflicts: Conflict[] = await syncSettings.loadConflicts();
+  let conflictByTask = new Map<string, Conflict>();
+  const session = await Session.open(store, () => Date.now());
+  const cmd = bind(session, PAGE_ACTOR);
+  // Same in-page commands on navigator, so a caller does not need the browser's model-context prompt.
+  const nav = navigator as Navigator & { modelContext?: Document["modelContext"] };
+  if (document.modelContext && nav.modelContext == null) {
+    try {
+      Object.defineProperty(navigator, "modelContext", {
+        configurable: true,
+        enumerable: true,
+        get: () => document.modelContext,
+      });
+    } catch { /* the document context remains the in-page path */ }
+  }
   const activity = session.activity;
 
   const announce = (text: string) => setField(header, "announce", text);
@@ -146,12 +170,13 @@ async function start(): Promise<void> {
     seenPhase = s.phase;
 
     const phaseName = s.phase === "focus" ? "Focus" : s.phase === "paused" ? "Paused" : "Break";
-    const total = s.phase === "break" ? BREAK_SECONDS : FOCUS_SECONDS;
+    const total = s.phase === "break" ? BREAK_SECONDS : (s.focus_minutes ?? DEFAULT_FOCUS_MINUTES) * 60;
     const stopBtn = header.querySelector<HTMLButtonElement>("[data-command='stop_pomodoro']");
     if (stopBtn) stopBtn.textContent = s.phase === "paused" ? "Close" : "Stop";
     const resumeBtn = header.querySelector<HTMLButtonElement>("[data-command='resume_pomodoro']");
     if (resumeBtn) resumeBtn.dataset.pomodoroId = s.phase === "paused" ? (s.pomodoro_id ?? "") : "";
     if (s.phase === "idle") {
+      delete header.dataset.focusMinutes;
       setField(header, "task-title", "");
       setField(header, "clock", "");
       setField(header, "phase", "");
@@ -175,7 +200,8 @@ async function start(): Promise<void> {
       field(header, "progress")?.style.setProperty("--progress", `${pct}%`);
       const who = activity.focusStarter();
       const actor = field(header, "actor");
-      if (actor) { actor.dataset.actor = who; actor.textContent = actorWord(who); }
+      if (actor) { actor.dataset.actor = who.kind; actor.textContent = who.name; }
+      header.dataset.focusMinutes = String(s.focus_minutes ?? "");
     }
     const tb = document.querySelector<HTMLElement>("[data-field='tb-phase']");
     if (tb) tb.textContent = s.phase === "idle" ? "Idle" : phaseName;
@@ -211,8 +237,8 @@ async function start(): Promise<void> {
     if (meta) {
       const actor = activity.taskActor(t.task_id);
       const n = activity.pomodoroCount(t.task_id);
-      const chip = el("span", { className: "actor", textContent: actorWord(actor) });
-      chip.dataset.actor = actor;
+      const chip = el("span", { className: "actor", textContent: actor.name });
+      chip.dataset.actor = actor.kind;
       const bits: Node[] = [document.createTextNode(`T-${String(seq + 1).padStart(2, "0")} · `), chip];
       if (n > 0) bits.push(document.createTextNode(` · ${n} pomodoro${n === 1 ? "" : "s"}`));
       meta.replaceChildren(...bits);
@@ -221,13 +247,28 @@ async function start(): Promise<void> {
       }
       if (t.notes !== undefined) meta.append(" ", el("span", { textContent: t.notes }, { field: "notes" }));
     }
+    const mark = conflictByTask.get(t.task_id);
+    const conflict = field(li, "conflict");
+    if (conflict) {
+      if (mark) {
+        conflict.hidden = false;
+        conflict.dataset.conflict = "true";
+        conflict.textContent = conflictLabel(mark);
+        li.dataset.conflict = "true";
+      } else {
+        conflict.hidden = true;
+        delete conflict.dataset.conflict;
+        conflict.textContent = "";
+        delete li.dataset.conflict;
+      }
+    }
     return li;
   };
 
   const timePhrase = (iso: string) => `· ${relativePhrase(iso, displayNow(Date.now()))}`;
   const activityRow = (item: ActivityItem): HTMLElement => {
     const li = document.createElement("li");
-    const who = el("span", { className: "who", textContent: actorWord(item.actor) });
+    const who = el("span", { className: "who", textContent: item.name });
     who.dataset.actor = item.actor;
     const body = document.createElement("span");
     body.append(document.createTextNode(`${item.text} `));
@@ -250,7 +291,7 @@ async function start(): Promise<void> {
       return;
     }
     who.dataset.actor = top.actor;
-    who.textContent = actorWord(top.actor);
+    who.textContent = top.name;
     const time = document.createElement("time");
     time.dateTime = top.time;
     time.textContent = timePhrase(top.time);
@@ -342,6 +383,7 @@ async function start(): Promise<void> {
   // Show stale is a view of the same fold; it does not append.
   const render = () => {
     session.takeAppended();
+    conflictByTask = new Map(mergeConflicts(findConflicts(session.logEvents()), storedConflicts).map((c) => [c.taskId, c]));
     const s = session.screenBoard(showStale);
     renderList(s);
     renderStatus(s);
@@ -378,7 +420,7 @@ async function start(): Promise<void> {
   }
   /** null marks the focus card. undefined marks nothing. A task id marks that row. */
   function markTarget(e: SessionEvent): string | null | undefined {
-    if (!e.actor.startsWith("agent")) return undefined;
+    if (readActor(e.actor).kind !== "agent") return undefined;
     if (e.type.endsWith("pomodoro_started.v1") || e.type.endsWith("pomodoro_stopped.v1")
       || e.type.endsWith("pomodoro_paused.v1") || e.type.endsWith("pomodoro_resumed.v1")) return null;
     if (e.type.endsWith("task_added.v1") || e.type.endsWith("task_imported.v1") || e.type.endsWith("task_completed.v1")) {
@@ -416,13 +458,14 @@ async function start(): Promise<void> {
     render();
     addTouches(name, batch);
     showPresence(name);
+    kickSync();
   };
 
   const clearOut = () => {
     rejection.replaceChildren();
     delete rejection.dataset.code;
     result.replaceChildren();
-    for (const k of ["kind", "accepted", "rejected", "skipped", "imported", "count"]) delete result.dataset[k];
+    for (const k of ["kind", "accepted", "rejected", "skipped", "imported", "count", "note"]) delete result.dataset[k];
   };
   const showRows = (rows: { code: string; path: string }[]) => {
     rejection.replaceChildren();
@@ -433,12 +476,48 @@ async function start(): Promise<void> {
     }
   };
 
-  /** Every control runs one command, then shows its rejection code or clears it. */
+  const syncOrigin = document.querySelector<HTMLElement>("[data-field='sync-origin']");
+  const syncStatus = document.querySelector<HTMLElement>("[data-field='sync-status']");
+  const endpointInput = document.querySelector<HTMLInputElement>("#sync-endpoint");
+  const tokenInput = document.querySelector<HTMLInputElement>("#sync-token");
+  const showOrigin = (endpoint: string) => {
+    const origin = endpoint ? endpointOrigin(endpoint) : null;
+    if (!syncOrigin) return;
+    syncOrigin.textContent = origin ?? "Not syncing";
+    if (origin) syncOrigin.dataset.origin = origin;
+    else delete syncOrigin.dataset.origin;
+  };
+  const showSync = (report: SyncReport) => {
+    if (!syncStatus) return;
+    syncStatus.textContent = report.message;
+    syncStatus.dataset.syncState = report.code;
+    if (report.seq !== undefined) syncStatus.dataset.syncSeq = String(report.seq);
+    else delete syncStatus.dataset.syncSeq;
+  };
+  showOrigin(savedSync?.endpoint ?? "");
+  if (endpointInput) endpointInput.value = savedSync?.endpoint ?? "";
+  if (tokenInput) tokenInput.value = savedSync?.token ?? "";
+
+  let syncTail: Promise<void> = Promise.resolve();
+  const requestSync = (): Promise<SyncReport> => {
+    const job = syncTail.then(() => syncSession({ session, store, settings: syncSettings }));
+    syncTail = job.then(() => undefined, () => undefined);
+    return job;
+  };
+  const paintSync = async (report: SyncReport) => {
+    storedConflicts = await syncSettings.loadConflicts();
+    showSync(report);
+    render();
+  };
+  const kickSync = () => { void requestSync().then((report) => { void paintSync(report); }); };
+
+  /** Every control runs one command, then shows its rejection code or clears it. Sync does not delay that result. */
   const run = async (fn: () => unknown) => {
     clearOut();
     const r = (await fn()) as { ok: boolean; code?: string };
     if (!r.ok) showRejection(rejection, r.code);
     render();
+    kickSync();
     return r;
   };
   /** The page is aria-busy from the control event until its command has finished and its output is on screen. */
@@ -527,7 +606,7 @@ async function start(): Promise<void> {
   on($("[data-command='export_events']"), "click", async () => {
     const r = await run(() => cmd.export_events("")) as ReturnType<typeof cmd.export_events>;
     if (!r.ok) return;
-    const url = URL.createObjectURL(new Blob([toJsonl(r.events)], { type: "application/x-ndjson" }));
+    const url = URL.createObjectURL(new Blob([formatLogFile(r.events)], { type: "application/x-ndjson" }));
     const a = el("a", { href: url, download: "events.jsonl" });
     document.body.append(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
@@ -536,14 +615,16 @@ async function start(): Promise<void> {
     result.append(el("div", { textContent: `Exported ${r.events.length} events.` }));
   });
   on($("[data-command='import_events']"), "click", async () => {
-    const lines = $<HTMLTextAreaElement>("#events-input").value.split("\n").filter((l) => l.trim() !== "");
-    const evs = lines.map((l) => { try { return JSON.parse(l) as unknown; } catch { return null; } });
-    const r = await run(() => cmd.import_events(evs)) as Awaited<ReturnType<typeof cmd.import_events>>;
+    const parsed = parseLogFile($<HTMLTextAreaElement>("#events-input").value);
+    const r = await run(() => parsed.ok ? cmd.import_events(parsed.events) : parsed) as Awaited<ReturnType<typeof cmd.import_events>>;
     if (!r.ok) return;
+    const note = `Imported ${r.imported} ${r.imported === 1 ? "event" : "events"}.`;
     result.dataset.kind = "import-events";
     result.dataset.imported = String(r.imported);
     result.dataset.rejected = String(r.rejected.length);
     result.dataset.skipped = String(r.skipped.length);
+    result.dataset.note = note;
+    result.append(el("div", { textContent: note }, { importNote: "" }));
     result.append(el("div", { textContent: `Imported ${r.imported}. Rejected ${r.rejected.length}. Skipped ${r.skipped.length}.` }));
     for (const s of r.skipped) result.append(el("div", { textContent: `${s.id}: ${friendly(s.code).title}` }, { skipId: s.id, code: s.code }));
     showRows(r.rejected);
@@ -611,12 +692,56 @@ async function start(): Promise<void> {
     else if (ev.key === "ArrowUp") { ev.preventDefault(); items[(i <= 0 ? items.length - 1 : i - 1)]?.focus(); }
   });
 
+  const saveSync = document.querySelector<HTMLButtonElement>("[data-action='save-sync']");
+  if (saveSync) on(saveSync, "click", async () => {
+    const endpoint = (endpointInput?.value ?? "").trim().replace(/\/$/, "");
+    const token = tokenInput?.value ?? "";
+    if (!endpoint) {
+      await syncSettings.turnOff();
+      applyConnectCsp("");
+      showOrigin("");
+      if (tokenInput) tokenInput.value = "";
+      const current = await syncSettings.load();
+      showSync({ ok: false, code: "off", message: "Sync is off.", lastSeq: current?.lastSeq ?? 0 });
+      return;
+    }
+    if (!endpointOrigin(endpoint)) {
+      const current = await syncSettings.load();
+      showSync({ ok: false, code: "bad_endpoint", message: "That endpoint URL is not valid.", lastSeq: current?.lastSeq ?? 0 });
+      return;
+    }
+    const prev = await syncSettings.load();
+    const same = prev?.endpoint.replace(/\/$/, "") === endpoint;
+    await syncSettings.save({
+      endpoint,
+      token,
+      lastSeq: same && prev ? prev.lastSeq : 0,
+      knownIds: same && prev ? prev.knownIds : [],
+    });
+    applyConnectCsp(endpoint);
+    showOrigin(endpoint);
+    showSync({ ok: true, code: "ok", message: "Sync settings saved.", lastSeq: same && prev ? prev.lastSeq : 0 });
+  });
+  const syncNow = document.querySelector<HTMLButtonElement>("[data-action='sync-now']");
+  if (syncNow) on(syncNow, "click", async () => { await paintSync(await requestSync()); });
+  const syncOff = document.querySelector<HTMLButtonElement>("[data-action='sync-off']");
+  if (syncOff) on(syncOff, "click", async () => {
+    await syncSettings.turnOff();
+    applyConnectCsp("");
+    showOrigin("");
+    if (endpointInput) endpointInput.value = "";
+    if (tokenInput) tokenInput.value = "";
+    const current = await syncSettings.load();
+    showSync({ ok: false, code: "off", message: "Sync is off.", lastSeq: current?.lastSeq ?? 0 });
+    render();
+  });
+
   // The timer shell: when the clock reaches the scheduled end, record the one finish. Not a command.
-  setInterval(() => { void session.finishPomodoro().then(render); }, 1000);
+  setInterval(() => { void session.finishPomodoro().then((r) => { render(); if (r.ok) kickSync(); }); }, 1000);
   // Relative times change once a minute. The projection itself is not rebuilt from the log.
   setInterval(renderActivity, 60_000);
 
-  await registerTools(document.modelContext, bind(session, "agent"), afterAgent);
+  await registerTools(document.modelContext, session, afterAgent);
   render();
   status.textContent = `Shell ready. ${COMMAND_NAMES.length} commands declared.`;
   status.dataset.ready = "true";

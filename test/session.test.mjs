@@ -4,17 +4,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CloudEvent } from "cloudevents";
 import { Session, bind, COMMAND_NAMES } from "../src/registry.ts";
-import { MemoryStore, toJsonl, parseJsonl, SOURCE } from "../src/log.ts";
+import { registerTools } from "../src/tools.ts";
+import { MemoryStore, toJsonl, parseJsonl, serializeEvent, SOURCE } from "../src/log.ts";
+import { foldActivity } from "../src/activity.ts";
 import { foldBoard, project } from "../src/project.ts";
 import { commitTitle } from "../src/addControl.ts";
 import { PAUSED_ROLL_OFF_MS } from "../src/timer.ts";
 
 const T0 = Date.parse("2026-10-14T18:00:00.000Z");
+const HUMAN = { kind: "human", name: "Patrick" };
+const AGENT = { kind: "agent", name: "Texian" };
 function make() {
   const clock = { t: T0 };
   const store = new MemoryStore();
   const s = new Session(store, () => clock.t);
-  return { s, clock, store, human: bind(s, "human"), agent: bind(s, "agent") };
+  return { s, clock, store, human: bind(s, HUMAN), agent: bind(s, AGENT) };
 }
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const fixture = () => ({
@@ -92,7 +96,7 @@ test("timer rules: start/stop/finish/break/idle and rejections write nothing", a
   const done = (await human.add_task("done")).task_id;
   await human.complete_task(done);
   const n = () => s.exportEvents().events.length;
-  assert.deepEqual(human.get_status(), { ok: true, phase: "idle", task_id: null, task_title: null, pomodoro_id: null, remaining_seconds: 0, paused: [] });
+  assert.deepEqual(human.get_status(), { ok: true, phase: "idle", task_id: null, task_title: null, pomodoro_id: null, remaining_seconds: 0, focus_minutes: null, paused: [] });
   assert.deepEqual(await human.stop_pomodoro(), { ok: false, code: "no_running_pomodoro" });
   const before = n();
   assert.deepEqual(await human.start_pomodoro("nope"), { ok: false, code: "unknown_task" });
@@ -148,9 +152,9 @@ test("a start after the scheduled end records the finish first (finish copies th
   assert.equal((await human.start_pomodoro(task_id)).ok, true);
   const ev = s.exportEvents().events;
   const fin = ev.find((e) => e.type.endsWith("pomodoro_finished.v1"));
-  assert.equal(fin.actor, "agent:local");
+  assert.deepEqual(fin.actor, AGENT);
   assert.equal(fin.time, "2026-10-14T18:25:00.000Z");
-  assert.equal(ev.at(-1).actor, "human:local");
+  assert.deepEqual(ev.at(-1).actor, HUMAN);
 });
 
 test("parity: same domain facts from human and agent, rejections identical", async () => {
@@ -161,7 +165,7 @@ test("parity: same domain facts from human and agent, rejections identical", asy
     await api.start_pomodoro("1"); await api.stop_pomodoro(); await api.complete_task("1");
     const rej = [await api.start_pomodoro("1"), await api.stop_pomodoro(), await api.import_tasks({}), await api.export_events("zzz")];
     const mask = s.exportEvents().events.map((e) => ({ type: e.type, subject: e.type.includes("pomodoro") ? "p" : e.subject, data: { ...e.data, pomodoro_id: undefined, ends_at: undefined } }));
-    return { r: r.accepted, mask, rej, actors: new Set(s.exportEvents().events.map((e) => e.actor.split(":")[0])) };
+    return { r: r.accepted, mask, rej, actors: new Set(s.exportEvents().events.map((e) => e.actor.kind)) };
   };
   const h = await run("human"), a = await run("agent");
   assert.deepEqual(h.mask, a.mask);
@@ -183,7 +187,7 @@ test("events: ULID ids, CloudEvents core, key order, actor, one line each", asyn
     assert.ok(ULID.test(e.id));
     assert.equal(e.source, SOURCE);
     assert.equal(e.specversion, "1.0");
-    assert.equal(e.actor, "human:local");
+    assert.deepEqual(e.actor, HUMAN);
   }
 });
 
@@ -236,6 +240,7 @@ test("working copy: discard and import restores state; reopen from store; ids ke
   assert.deepEqual(fresh.getStatus(), human.get_status());
   assert.deepEqual(fresh.exportEvents().events.map((e) => e.id), exp.events.map((e) => e.id));
   assert.equal(toJsonl(fresh.exportEvents().events), toJsonl(exp.events));
+  assert.equal(fresh.exportEvents().events.some((e) => e.type.endsWith("log_imported.v1")), false);
 });
 
 test("export is a byte prefix after another command", async () => {
@@ -262,6 +267,7 @@ test("cursor: empty log, full export, later only, twice adds no duplicate id, ap
   assert.equal((await human.import_events([early])).imported, 1);
   const later = human.export_events(first.cursor);
   assert.deepEqual(later.events.map((e) => e.id), ["00000000000000000000000000"]);
+  assert.equal(later.events[0].actor, early.actor);
   // Two cursor exports, applied to a file, add no duplicate id.
   const file = [...first.events, ...later.events];
   await human.add_task("y");
@@ -272,17 +278,40 @@ test("cursor: empty log, full export, later only, twice adds no duplicate id, ap
   assert.equal(s.exportEvents(5).code, "unknown_cursor");
 });
 
-test("import_events: keeps ids, skips duplicates, reports invalid, rejects non-array, does not re-run rules", async () => {
+test("import_events accepts actors as written, rejects a bad file as a whole, and skips duplicates", async () => {
   const { s, human } = make();
   assert.deepEqual(await human.import_events({}), { ok: false, code: "invalid_events" });
   await human.add_task("x");
   const ev = s.exportEvents().events[0];
-  const r = await human.import_events([ev, { ...ev, id: "N1", type: "com.specdlc.tandem.task_completed.v1", subject: "ghost", data: { task_id: "ghost" } }, { ...ev, id: "N2", source: "urn:other" }, 7, { ...ev, id: "N3", time: "yesterday" }]);
-  assert.equal(r.imported, 1);
-  assert.deepEqual(r.skipped, [{ id: ev.id, code: "duplicate_id" }]);
-  assert.deepEqual(r.rejected.map((x) => [x.path, x.code]), [["events[2]", "invalid_event"], ["events[3]", "invalid_event"], ["events[4]", "invalid_event"]]);
+  const before = s.exportEvents().events.map((e) => e.id);
+  const bad = await human.import_events([ev, { ...ev, id: "N1", type: "com.specdlc.tandem.task_completed.v1", subject: "ghost", data: { task_id: "ghost" } }, { ...ev, id: "N2", source: "urn:other" }, 7, { ...ev, id: "N3", time: "yesterday" }]);
+  assert.deepEqual(bad, { ok: false, code: "invalid_events" });
+  assert.deepEqual(s.exportEvents().events.map((e) => e.id), before);
+  const ghost = await human.import_events([{ ...ev, id: "N1", type: "com.specdlc.tandem.task_completed.v1", subject: "ghost", data: { task_id: "ghost" } }]);
+  assert.equal(ghost.imported, 1);
+  assert.deepEqual(ghost.rejected, []);
   assert.ok(s.exportEvents().events.some((e) => e.id === "N1"));
   assert.equal(human.list_tasks().tasks.length, 1);
+  const again = await human.import_events([ev]);
+  assert.equal(again.imported, 0);
+  assert.deepEqual(again.skipped, [{ id: ev.id, code: "duplicate_id" }]);
+  const foreign = { ...ev, id: "N4", actor: "human:remote" };
+  const kept = { ...ev, id: "N5", actor: "agent:local" };
+  const mixed = await human.import_events([foreign, kept]);
+  assert.equal(mixed.imported, 2);
+  assert.deepEqual(mixed.rejected, []);
+  const stored = s.exportEvents().events;
+  assert.equal(stored.find((e) => e.id === "N4").actor, "human:remote");
+  assert.equal(stored.find((e) => e.id === "N5").actor, "agent:local");
+  assert.equal(stored.some((e) => e.type.endsWith("log_imported.v1")), false);
+  const beforeBad = toJsonl(stored);
+  const badFile = await human.import_events([kept, { ...ev, id: "N6", type: "com.specdlc.tandem.note_added.v1" }]);
+  assert.deepEqual(badFile, { ok: false, code: "invalid_events" });
+  assert.equal(toJsonl(s.exportEvents().events), beforeBad);
+  const beforeSecond = toJsonl(s.exportEvents().events);
+  const noop = await human.import_events(JSON.parse(JSON.stringify(s.exportEvents().events)));
+  assert.equal(noop.imported, 0);
+  assert.equal(toJsonl(s.exportEvents().events), beforeSecond);
 });
 
 test("concurrent commands do not interleave: two starts yield one pomodoro", async () => {
@@ -330,10 +359,10 @@ test("pause and resume are events, and the same now rebuilds the same board", as
   assert.equal(paused.type, "com.specdlc.tandem.pomodoro_paused.v1");
   assert.equal(paused.subject, held.pomodoro_id);
   assert.equal(paused.time, new Date(pausedAt).toISOString());
-  assert.equal(paused.actor, "human:local");
+  assert.deepEqual(paused.actor, HUMAN);
   assert.deepEqual(Object.keys(paused.data), ["pomodoro_id", "remaining_seconds"]);
   assert.equal(new CloudEvent(paused).validate(), true);
-  assert.equal(s.activity.newest(1)[0].text, "You paused the timer");
+  assert.equal(s.activity.newest(1)[0].text, "Patrick paused the timer");
   const card = human.get_status();
   assert.equal(card.phase, "paused");
   assert.equal(card.remaining_seconds, 1460);
@@ -355,13 +384,13 @@ test("pause and resume are events, and the same now rebuilds the same board", as
   const resumeEv = s.exportEvents().events.at(-1);
   assert.equal(resumeEv.type, "com.specdlc.tandem.pomodoro_resumed.v1");
   assert.equal(resumeEv.subject, held.pomodoro_id);
-  assert.equal(resumeEv.actor, "agent:local");
+  assert.deepEqual(resumeEv.actor, AGENT);
   assert.equal(resumeEv.time, new Date(resumedAt).toISOString());
   assert.deepEqual(Object.keys(resumeEv.data), ["pomodoro_id", "ends_at"]);
   assert.deepEqual([human.get_status().phase, human.get_status().remaining_seconds], ["focus", 1460]);
   clock.t += 10_000;
   assert.equal(human.get_status().remaining_seconds, 1450);
-  assert.equal(s.activity.newest(1)[0].text, "Agent resumed focus on “x”");
+  assert.equal(s.activity.newest(1)[0].text, "Texian resumed focus on “x”");
 
   const again = clock.t;
   await human.pause_pomodoro();
@@ -469,4 +498,200 @@ test("commitTitle empties the box at commit, so a title typed before the add res
   assert.deepEqual(await commitTitle(box, add), { ok: false, code: "missing_title" });
   assert.equal(box.value, "   ");
   assert.deepEqual(human.list_tasks().tasks.map((t) => t.title), ["one", "two", "three"]);
+});
+
+const taskEvent = (id, time, taskId, title, actor = "human:local") => ({
+  specversion: "1.0", id, source: SOURCE, type: "com.specdlc.tandem.task_added.v1",
+  subject: taskId, time, datacontenttype: "application/json", dataschema: "urn:specdlc:schema:tandem.session:1",
+  actor, data: { task_id: taskId, title },
+});
+
+test("import batch is stored by recorded time then id, after the existing lines, and a later time wins", async () => {
+  const { s, human } = make();
+  const local = await human.add_task("local");
+  const prefix = toJsonl(s.exportEvents().events);
+  // The small id carries the later recorded time. A larger id at an earlier recorded time must not win.
+  const later = taskEvent("00000000000000000000000000", "2026-10-14T19:00:00.000Z", "t", "Later title");
+  const earlier = taskEvent("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", "2026-10-14T18:00:00.000Z", "t", "Earlier title");
+  const other = taskEvent("MMMMMMMMMMMMMMMMMMMMMMMMMM", "2026-10-14T18:00:00Z", "m", "Same instant");
+  const r = await human.import_events([later, other, earlier]);
+  assert.equal(r.imported, 3);
+  const stored = s.exportEvents().events;
+  assert.ok(toJsonl(stored).startsWith(prefix));
+  assert.deepEqual(stored.slice(1).map((e) => e.id), [other.id, earlier.id, later.id]);
+  const tasks = human.list_tasks().tasks;
+  assert.deepEqual(tasks.map((t) => [t.task_id, t.title]), [
+    [local.task_id, "local"],
+    ["m", "Same instant"],
+    ["t", "Later title"],
+  ]);
+  assert.equal(tasks.find((t) => t.task_id === "t").status, "open");
+  assert.deepEqual(project(stored).list(), tasks);
+  assert.deepEqual(s.activity.newest(4), foldActivity(stored).newest(4));
+});
+
+test("a log stored out of recorded-time order still folds by time then id, and export stays in append order", async () => {
+  // import_events sorts a batch before it stores it. This log is appended as written.
+  const bee = taskEvent("B0000000000000000000000000", "2026-10-14T19:00:00.000Z", "b", "Bee");
+  const later = taskEvent("T9990000000000000000000000", "2026-10-14T19:00:00.000Z", "t", "Later title");
+  const aye = taskEvent("A0000000000000000000000000", "2026-10-14T18:00:00.000Z", "a", "Aye");
+  const earlier = taskEvent("T0000000000000000000000000", "2026-10-14T18:00:00.000Z", "t", "Earlier title");
+  const appendOrder = [bee, later, aye, earlier];
+  const store = new MemoryStore();
+  await store.append(appendOrder.map(serializeEvent));
+  const s = await Session.open(store, () => T0);
+  const exported = s.exportEvents().events;
+  assert.deepEqual(exported.map((e) => e.id), appendOrder.map((e) => e.id));
+  assert.deepEqual(exported.map((e) => e.time), appendOrder.map((e) => e.time));
+  // Recorded time, then id: Aye, Earlier, Bee, Later. The later time replaces Earlier.
+  const tasks = s.listTasks().tasks;
+  assert.deepEqual(tasks.map((row) => [row.task_id, row.title]), [
+    ["a", "Aye"],
+    ["t", "Later title"],
+    ["b", "Bee"],
+  ]);
+  assert.deepEqual(project(exported).list(), tasks);
+  assert.deepEqual(s.activity.newest(8), foldActivity(exported).newest(8));
+});
+
+test("a repeated task_added or task_imported with the same task id replaces the earlier one", async () => {
+  const addedEarly = taskEvent("AAAA0000000000000000000000", "2026-10-14T18:00:00.000Z", "added-then-imported", "Added first");
+  const importedLater = {
+    ...taskEvent("BBBB0000000000000000000000", "2026-10-14T19:00:00.000Z", "added-then-imported", "Imported later"),
+    type: "com.specdlc.tandem.task_imported.v1",
+  };
+  const importedEarly = {
+    ...taskEvent("CCCC0000000000000000000000", "2026-10-14T18:00:00.000Z", "imported-then-added", "Imported first"),
+    type: "com.specdlc.tandem.task_imported.v1",
+  };
+  const addedLater = taskEvent("DDDD0000000000000000000000", "2026-10-14T19:00:00.000Z", "imported-then-added", "Added later");
+  // Equal times. The smaller id is stored first, so the old first-wins fold would keep it.
+  const lowFirst = taskEvent("EEEE0000000000000000000000", "2026-10-14T20:00:00.000Z", "equal-time", "Low id");
+  const highSecond = {
+    ...taskEvent("FFFF0000000000000000000000", "2026-10-14T20:00:00.000Z", "equal-time", "High id"),
+    type: "com.specdlc.tandem.task_imported.v1",
+  };
+  // Same instant, greater id stored first. Append order is not the tie-break.
+  const highFirst = taskEvent("ZZZZ0000000000000000000000", "2026-10-14T21:00:00.000Z", "reverse-id", "High id");
+  const lowSecond = {
+    ...taskEvent("MMMM0000000000000000000000", "2026-10-14T21:00:00.000Z", "reverse-id", "Low id"),
+    type: "com.specdlc.tandem.task_imported.v1",
+  };
+  const appendOrder = [addedEarly, importedLater, importedEarly, addedLater, lowFirst, highSecond, highFirst, lowSecond];
+  const store = new MemoryStore();
+  await store.append(appendOrder.map(serializeEvent));
+  const s = await Session.open(store, () => T0);
+  const exported = s.exportEvents().events;
+  assert.deepEqual(exported.map((e) => e.id), appendOrder.map((e) => e.id));
+  assert.deepEqual(s.listTasks().tasks.map((row) => [row.task_id, row.title]), [
+    ["added-then-imported", "Imported later"],
+    ["imported-then-added", "Added later"],
+    ["equal-time", "High id"],
+    ["reverse-id", "High id"],
+  ]);
+  assert.deepEqual(project(exported).list(), s.listTasks().tasks);
+});
+
+test("an earlier completion does not outrank a later edit of the same task", async () => {
+  const { human } = make();
+  const add = taskEvent("00000000000000000000000000", "2026-10-14T19:00:00.000Z", "t", "Later");
+  const done = {
+    ...taskEvent("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", "2026-10-14T18:00:00.000Z", "t", "Later"),
+    type: "com.specdlc.tandem.task_completed.v1", data: { task_id: "t" },
+  };
+  await human.import_events([done, add]);
+  const t = human.list_tasks().tasks.find((row) => row.task_id === "t");
+  assert.equal(t.title, "Later");
+  assert.equal(t.status, "open");
+  const completedLater = {
+    ...taskEvent("YYYYYYYYYYYYYYYYYYYYYYYYYY", "2026-10-14T20:00:00.000Z", "t", "Later"),
+    type: "com.specdlc.tandem.task_completed.v1", data: { task_id: "t" },
+  };
+  await human.import_events([completedLater]);
+  assert.equal(human.list_tasks().tasks.find((row) => row.task_id === "t").status, "completed");
+});
+
+test("expected_cursor rejects a stale tail without writing", async () => {
+  const { s, clock, human, agent } = make();
+  assert.equal((await agent.add_task("seed", undefined, "")).ok, true);
+  const cursor = human.export_events().cursor;
+  const before = toJsonl(s.exportEvents().events);
+  assert.deepEqual(await agent.add_task("nope", undefined, "not-the-tail"), { ok: false, code: "stale_cursor" });
+  assert.deepEqual(await agent.import_tasks({ schema: "tandem.tasks/v0", tasks: [{ title: "nope" }], expected_cursor: "not-the-tail" }), { ok: false, code: "stale_cursor" });
+  const spoof = taskEvent("SPOOF", "2026-10-14T21:00:00.000Z", "spoof", "Spoof");
+  assert.deepEqual(await agent.import_events([spoof], "not-the-tail"), { ok: false, code: "stale_cursor" });
+  assert.equal(toJsonl(s.exportEvents().events), before);
+
+  const { task_id } = await agent.add_task("x");
+  await agent.start_pomodoro(task_id);
+  clock.t = T0 + 1_600_000;
+  const running = s.exportEvents().events.length;
+  assert.deepEqual(await agent.pause_pomodoro("not-the-tail"), { ok: false, code: "stale_cursor" });
+  assert.equal(s.exportEvents().events.length, running, "a stale cursor does not record the finish either");
+
+  const tools = new Map();
+  await registerTools({ registerTool: async (tool) => { tools.set(tool.name, tool); } }, s, () => {});
+  const tail = s.exportEvents().cursor;
+  const added = await tools.get("add_task").execute({ title: "from tool", actor: AGENT, expected_cursor: tail });
+  assert.equal(added.ok, true);
+  const ev = s.exportEvents().events.at(-1);
+  assert.deepEqual(ev.actor, AGENT);
+  assert.equal(ev.data.title, "from tool");
+  assert.equal("actor" in ev.data, false);
+  assert.equal("expected_cursor" in ev.data, false);
+  const again = await tools.get("add_task").execute({ title: "no cursor", actor: "root" });
+  assert.deepEqual(again, { ok: false, code: "invalid_payload" });
+
+  const shared = s.exportEvents().cursor;
+  const [one, two] = await Promise.all([
+    agent.add_task("one", undefined, shared),
+    agent.add_task("two", undefined, shared),
+  ]);
+  assert.deepEqual([one.ok, two.ok].sort(), [false, true]);
+  assert.equal([one, two].find((row) => !row.ok).code, "stale_cursor");
+  assert.equal(s.exportEvents().events.filter((e) => e.data.title === "one" || e.data.title === "two").length, 1);
+});
+
+test("two copies merge by importing the other JSONL and meet on the same list and timer", async () => {
+  const a = make();
+  const b = make();
+  b.clock.t = T0 + 60_000;
+  const alpha = await a.human.add_task("Alpha");
+  await a.human.start_pomodoro(alpha.task_id);
+  a.clock.t += 5_000;
+  await a.human.pause_pomodoro();
+  const beta = await b.agent.add_task("Beta");
+  b.clock.t += 5_000;
+  await b.agent.start_pomodoro(beta.task_id);
+
+  const aLog = a.s.exportEvents().events.map((e) => ({ ...e, data: { ...e.data } }));
+  const bLog = b.s.exportEvents().events.map((e) => ({ ...e, data: { ...e.data } }));
+  await a.human.import_events([bLog[1], bLog[0]]);
+  await b.agent.import_events([aLog[2], aLog[0], aLog[1]]);
+
+  const now = T0 + 120_000;
+  a.clock.t = now;
+  b.clock.t = now;
+  assert.deepEqual(a.human.list_tasks().tasks.map((t) => [t.task_id, t.title]), [
+    [alpha.task_id, "Alpha"],
+    [beta.task_id, "Beta"],
+  ]);
+  assert.deepEqual(b.agent.list_tasks(), a.human.list_tasks());
+  assert.deepEqual(b.agent.get_status(), a.human.get_status());
+  assert.equal(a.human.get_status().phase, "focus");
+  assert.equal(a.human.get_status().task_title, "Beta");
+  assert.deepEqual(a.s.activity.taskActor(alpha.task_id), HUMAN);
+  assert.deepEqual(b.s.activity.taskActor(beta.task_id), AGENT);
+  assert.equal(b.s.activity.newest(1)[0].text, "Texian started focus on “Beta”");
+  assert.deepEqual(a.s.exportEvents().events.slice(0, aLog.length).map((e) => e.id), aLog.map((e) => e.id));
+  assert.deepEqual(b.s.exportEvents().events.slice(0, bLog.length).map((e) => e.id), bLog.map((e) => e.id));
+  assert.notDeepEqual(a.s.exportEvents().events.map((e) => e.id), b.s.exportEvents().events.map((e) => e.id));
+  assert.deepEqual(project(b.s.exportEvents().events).status(now), withoutOk(b.agent.get_status()));
+  assert.deepEqual(b.s.activity.newest(8), foldActivity(b.s.exportEvents().events).newest(8));
+
+  const fresh = new Session(new MemoryStore(), () => now);
+  assert.equal((await fresh.importEvents(b.s.exportEvents().events)).imported, b.s.exportEvents().events.length);
+  assert.deepEqual(fresh.listTasks(), a.human.list_tasks());
+  assert.deepEqual(fresh.getStatus(), a.human.get_status());
+  assert.deepEqual(fresh.exportEvents().events.map((e) => e.id), a.s.exportEvents().events.map((e) => e.id));
 });
